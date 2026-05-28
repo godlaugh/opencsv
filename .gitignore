@@ -1,0 +1,19 @@
+# Go
+backend/opencsv
+backend/dist/
+
+# Node
+frontend/node_modules/
+frontend/dist/
+
+# OS
+.DS_Store
+*.bak
+
+# IDE
+.vscode/
+.idea/
+
+# Temp
+*.tmp
+*.log

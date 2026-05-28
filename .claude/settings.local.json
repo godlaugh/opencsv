@@ -1,0 +1,25 @@
+{
+  "permissions": {
+    "allow": [
+      "WebFetch(domain:smoothcsv.com)",
+      "WebFetch(domain:github.com)",
+      "Bash(go mod *)",
+      "Bash(go get *)",
+      "Read(//usr/local/go/bin/**)",
+      "Read(//opt/homebrew/Cellar/go/1.20.7/libexec/bin/**)",
+      "Bash(brew list *)",
+      "Bash(npm --version)",
+      "Bash(/bin/bash -c 'export PATH=\"/Users/hoo/.nvm/versions/node/v22.21.0/bin:$PATH\"; cd /Users/hoo/AIStudio/opencsv-cc/frontend && npm create vite@latest . -- --template vue-ts 2>&1')",
+      "Bash(/bin/bash -c 'export PATH=\"/Users/hoo/.nvm/versions/node/v22.21.0/bin:$PATH\"; cd /Users/hoo/AIStudio/opencsv-cc/frontend && echo \"y\" | npm create vite@latest . -- --template vue-ts 2>&1')",
+      "Bash(/Users/hoo/.nvm/versions/node/v22.21.0/bin/npm install *)",
+      "Bash(/bin/bash -c 'unset GVM_ROOT; export PATH=\"/Users/hoo/.nvm/versions/node/v22.21.0/bin:$PATH\"; cd /Users/hoo/AIStudio/opencsv-cc/frontend && npm install 2>&1 | tail -15')",
+      "Bash(/bin/bash -c 'unset GVM_ROOT; export PATH=\"/Users/hoo/.nvm/versions/node/v22.21.0/bin:$PATH\"; cd /Users/hoo/AIStudio/opencsv-cc/frontend && npm run dev 2>&1')",
+      "Bash(curl -s http://localhost:5173)",
+      "Bash(mkdir -p /Users/hoo/AIStudio/opencsv-cc/.claude)",
+      "mcp__Claude_Preview__preview_start",
+      "Bash(cat > *)",
+      "Bash(curl -s -X POST http://localhost:7070/api/files/upload -H 'Content-Type: application/octet-stream' -H 'X-Filename: test_sample.csv' --data-binary @/tmp/test_sample.csv)",
+      "Bash(python3 -m json.tool)"
+    ]
+  }
+}

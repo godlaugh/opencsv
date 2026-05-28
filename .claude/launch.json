@@ -1,0 +1,12 @@
+{
+  "version": "0.0.1",
+  "configurations": [
+    {
+      "name": "opencsv-frontend",
+      "runtimeExecutable": "npm",
+      "runtimeArgs": ["run", "dev"],
+      "cwd": "/Users/hoo/AIStudio/opencsv-cc/frontend",
+      "port": 5173
+    }
+  ]
+}
