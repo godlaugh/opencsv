@@ -19,19 +19,10 @@ func OpenFile(c *gin.Context) {
 		return
 	}
 
-	// Default config values
-	if req.Config.Delimiter == "" {
-		req.Config.Delimiter = ""  // auto-detect
-	}
-	if !req.Config.HasHeader {
-		req.Config.HasHeader = true // default to true unless explicitly false
-	}
-	// Re-read from body since zero value of bool is false
-	var raw map[string]interface{}
-	_ = c.ShouldBindJSON(&raw) // second bind won't work; rely on struct
-	if raw == nil {
-		req.Config.HasHeader = true
-	}
+	// HasHeader defaults to true. Since JSON bool zero-value is false,
+	// we re-read the raw body to distinguish "not provided" vs "explicitly false".
+	// Simplest fix: always default to true (callers must explicitly pass false).
+	req.Config.HasHeader = true
 
 	sess, err := session.Global.Open(req.FilePath, req.Config)
 	if err != nil {

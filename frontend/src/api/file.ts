@@ -9,6 +9,7 @@ export interface OpenResponse {
   columns: Column[]
   totalRows: number
   rows: string[][]
+  modified: boolean
 }
 
 export const fileApi = {

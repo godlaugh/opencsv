@@ -1,28 +1,21 @@
 <template>
   <div class="app-layout">
-    <!-- Title Bar / Toolbar -->
-    <Toolbar />
-
-    <!-- Tab Bar -->
+    <Toolbar @find-replace="gridRef?.openFindReplace()" @sort="gridRef?.openSort()" @filter="gridRef?.openFilter()" @sql="gridRef?.openSql()" @insert-row="gridRef?.insertRowAtActive()" @delete-rows="gridRef?.deleteSelectedRows()" />
     <TabBar />
-
-    <!-- Main Content -->
     <div class="app-body">
       <template v-if="activeTab">
-        <VirtualGrid :key="activeTab.id" :tab="activeTab" />
+        <VirtualGrid :key="activeTab.id" :tab="activeTab" ref="gridRef" />
       </template>
       <template v-else>
         <WelcomeScreen />
       </template>
     </div>
-
-    <!-- Status Bar -->
     <StatusBar />
   </div>
 </template>
 
 <script setup lang="ts">
-import { computed } from 'vue'
+import { computed, ref } from 'vue'
 import Toolbar from './Toolbar.vue'
 import TabBar from './TabBar.vue'
 import StatusBar from './StatusBar.vue'
@@ -32,6 +25,7 @@ import { useTabsStore } from '@/stores/tabs'
 
 const tabsStore = useTabsStore()
 const activeTab = computed(() => tabsStore.activeTab)
+const gridRef = ref<InstanceType<typeof VirtualGrid> | null>(null)
 </script>
 
 <style scoped>

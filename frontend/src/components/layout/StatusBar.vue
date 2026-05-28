@@ -52,15 +52,21 @@
 </template>
 
 <script setup lang="ts">
-import { computed, inject } from 'vue'
+import { computed, ref, onMounted, onUnmounted } from 'vue'
 import { X } from 'lucide-vue-next'
 import { useTabsStore } from '@/stores/tabs'
 import type { AggregateResult } from '@/types'
 
 const tabsStore = useTabsStore()
 const activeTab = computed(() => tabsStore.activeTab)
-const aggregate = inject<AggregateResult | null>('aggregateResult', null)
-const selCount = inject<number>('selectionCount', 0)
+const aggregate = ref<(AggregateResult & { count: number }) | null>(null)
+const selCount = computed(() => aggregate.value?.count ?? 0)
+
+function onAggregateEvent(e: Event) {
+  aggregate.value = (e as CustomEvent).detail
+}
+onMounted(() => window.addEventListener('grid:aggregate', onAggregateEvent))
+onUnmounted(() => window.removeEventListener('grid:aggregate', onAggregateEvent))
 
 const delimLabel = computed(() => {
   const d = activeTab.value?.session.config.delimiter

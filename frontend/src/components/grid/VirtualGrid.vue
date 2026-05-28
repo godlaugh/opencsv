@@ -1,6 +1,6 @@
 <template>
   <div class="grid-wrap" @keydown="onKeydown" tabindex="0" ref="wrapRef">
-    <!-- Toolbar overlays -->
+    <!-- Overlays / Panels -->
     <FindReplaceBar v-if="showFindReplace" :tab="tab" @close="showFindReplace = false" @matches="onFindMatches" />
     <SortDialog v-if="showSort" :columns="tab.session.columns" @close="showSort = false" @sort="onSort" />
     <FilterDialog v-if="showFilter" :columns="tab.session.columns" @close="showFilter = false" @filter="onFilter" />
@@ -8,29 +8,32 @@
     <ContextMenu v-if="ctxMenu" :items="ctxItems" :x="ctxMenu.x" :y="ctxMenu.y" @close="ctxMenu = null" @select="onCtxSelect" />
     <TransformMenu v-if="showTransform" @close="showTransform = false" @apply="onTransform" />
 
-    <!-- Header row -->
-    <div class="grid-header-row" ref="headerRef" :style="{ paddingLeft: colNumW + 'px' }">
-      <div
-        v-for="(col, ci) in visibleCols"
-        :key="col.index"
-        class="grid-header-cell"
-        :class="{ selected: isColSelected(col.index), sorted: sortedColIndex === col.index }"
-        :style="{ width: colWidths[col.index] + 'px', minWidth: colWidths[col.index] + 'px' }"
-        @click="selectCol(col.index, $event)"
-        @dblclick="startHeaderEdit(ci, col)"
-        @contextmenu.prevent="openColCtx($event, col.index)"
-      >
-        <span class="header-name truncate">{{ col.name }}</span>
-        <span v-if="sortedColIndex === col.index" class="sort-indicator">
-          {{ sortOrder === 'asc' ? '↑' : '↓' }}
-        </span>
-        <div class="col-resize-handle" @mousedown.stop="startColResize($event, col.index)" />
+    <!-- Fixed header: row-num gutter + scrollable column headers -->
+    <div class="grid-header-outer">
+      <div class="grid-header-rownum" :style="{ width: colNumW + 'px' }" />
+      <div class="grid-header-scroll-wrap" style="overflow: hidden; flex: 1;">
+        <div class="grid-header-row" ref="headerRef" :style="{ width: totalWidth + 'px' }">
+          <div
+            v-for="(col, ci) in visibleCols"
+            :key="col.index"
+            class="grid-header-cell"
+            :class="{ selected: isColSelected(col.index), sorted: sortedColIndex === col.index }"
+            :style="{ width: getColWidth(col.index) + 'px' }"
+            @click="selectCol(col.index, $event)"
+            @dblclick="startHeaderEdit(ci, col)"
+            @contextmenu.prevent="openColCtx($event, col.index)"
+          >
+            <span class="header-name truncate">{{ col.name }}</span>
+            <span v-if="sortedColIndex === col.index" class="sort-indicator">{{ sortOrder === 'asc' ? '↑' : '↓' }}</span>
+            <div class="col-resize-handle" @mousedown.stop="startColResize($event, col.index)" />
+          </div>
+        </div>
       </div>
     </div>
 
     <!-- Scrollable body -->
     <div class="grid-body" ref="bodyRef" @scroll="onScroll">
-      <!-- Row number column -->
+      <!-- Row number gutter -->
       <div class="grid-row-nums" :style="{ width: colNumW + 'px', height: totalHeight + 'px' }">
         <div
           v-for="ri in visibleRowRange"
@@ -43,7 +46,7 @@
         >{{ ri + 1 }}</div>
       </div>
 
-      <!-- Grid content area -->
+      <!-- Cell content area -->
       <div class="grid-content" :style="{ height: totalHeight + 'px', width: totalWidth + 'px', marginLeft: colNumW + 'px' }">
         <div
           v-for="ri in visibleRowRange"
@@ -59,10 +62,9 @@
             :class="{
               selected: isCellSelected(ri, col.index),
               active: isActiveCell(ri, col.index),
-              'find-match': isFindMatch(ri, col.index),
-              editing: editingCell?.row === ri && editingCell?.col === col.index
+              'find-match': isFindMatch(ri, col.index)
             }"
-            :style="{ width: colWidths[col.index] + 'px', minWidth: colWidths[col.index] + 'px' }"
+            :style="{ width: getColWidth(col.index) + 'px' }"
             @mousedown="onCellMousedown($event, ri, col.index)"
             @mouseenter="onCellMouseenter($event, ri, col.index)"
             @dblclick="startEdit(ri, col.index)"
@@ -85,13 +87,12 @@
             </template>
           </div>
         </div>
-
-        <!-- Selection overlay -->
+        <!-- Selection highlight overlay -->
         <div v-if="selectionRect" class="selection-overlay" :style="selectionRect" />
       </div>
     </div>
 
-    <!-- Loading overlay -->
+    <!-- Loading spinner -->
     <div v-if="loading" class="grid-loading">
       <div class="spinner" />
       <span>Loading...</span>
@@ -176,7 +177,8 @@ const visibleCols = computed(() => {
   const visible = []
   for (const col of columns.value) {
     const w = getColWidth(col.index)
-    if (x + w >= scrollLeft.value - 200 && x <= scrollLeft.value + viewportW.value + 200) {
+    // show columns in the scroll viewport + 300px buffer on each side
+    if (x + w > scrollLeft.value - 300 && x < scrollLeft.value + viewportW.value + 300) {
       visible.push(col)
     }
     x += w
@@ -217,10 +219,10 @@ const selectionRect = computed(() => {
   return { top: top + 'px', left: left + 'px', width: width + 'px', height: height + 'px' }
 })
 
-function getColLeft(idx: number) {
+function getColLeft(colIdx: number) {
   let x = 0
   for (const col of columns.value) {
-    if (col.index >= idx) break
+    if (col.index === colIdx) break
     x += getColWidth(col.index)
   }
   return x
@@ -525,12 +527,14 @@ function redoAction() {
   debouncedSync(entry.after.cells)
 }
 
-// Scroll
+// Scroll — sync header horizontal scroll with body
 function onScroll(e: Event) {
   const el = e.target as HTMLElement
   scrollTop.value = el.scrollTop
   scrollLeft.value = el.scrollLeft
-  if (headerRef.value) headerRef.value.scrollLeft = el.scrollLeft
+  if (headerRef.value) {
+    headerRef.value.style.transform = `translateX(-${el.scrollLeft}px)`
+  }
 }
 
 function scrollToCell(row: number, col: number) {
@@ -841,14 +845,59 @@ const showSql = ref(false)
 const showTransform = ref(false)
 
 // Expose control methods for toolbar
-defineExpose({ showFindReplace, showSort, showFilter, showSql })
+function openFindReplace() { showFindReplace.value = true }
+function openSort() { showSort.value = true }
+function openFilter() { showFilter.value = true }
+function openSql() { showSql.value = true }
 
-// Aggregate for status bar
+async function insertRowAtActive() {
+  const r = activeCell.value.row
+  const id_ = props.tab.session.id
+  await dataApi.insertRows(id_, r, 1)
+  localRows.value.splice(r + 1, 0, Array(columns.value.length).fill(''))
+  tabsStore.updateTabRows(props.tab.id, localRows.value)
+  notify?.('success', 'Row inserted')
+}
+
+async function deleteSelectedRows() {
+  const rows: number[] = []
+  for (let r = selMinRow.value; r <= selMaxRow.value; r++) {
+    const actualRow = props.tab.filterActive && props.tab.filteredIndices
+      ? props.tab.filteredIndices[r] : r
+    rows.push(actualRow)
+  }
+  const id_ = props.tab.session.id
+  await dataApi.deleteRows(id_, rows)
+  localRows.value = localRows.value.filter((_, i) => !rows.includes(i))
+  tabsStore.updateTabRows(props.tab.id, localRows.value)
+  sel.value = { startRow: 0, startCol: 0, endRow: 0, endCol: 0 }
+  notify?.('success', `Deleted ${rows.length} row(s)`)
+}
+
+defineExpose({ openFindReplace, openSort, openFilter, openSql, insertRowAtActive, deleteSelectedRows })
+
+// Aggregate stats — emit to window so StatusBar can pick up regardless of tree position
 const aggregateResult = ref<AggregateResult | null>(null)
 const selectionCount = computed(() => (selMaxRow.value - selMinRow.value + 1) * (selMaxCol.value - selMinCol.value + 1))
 
-provide('aggregateResult', aggregateResult)
-provide('selectionCount', selectionCount)
+// Debounce aggregate calc on selection change
+let aggTimer: ReturnType<typeof setTimeout> | null = null
+watch([selMinRow, selMaxRow, selMinCol, selMaxCol], () => {
+  if (aggTimer) clearTimeout(aggTimer)
+  aggTimer = setTimeout(async () => {
+    const count = selectionCount.value
+    if (count < 2 || count > 10000) { aggregateResult.value = null; window.dispatchEvent(new CustomEvent('grid:aggregate', { detail: null })); return }
+    const cells: Cell[] = []
+    for (let r = selMinRow.value; r <= selMaxRow.value; r++)
+      for (let c = selMinCol.value; c <= selMaxCol.value; c++)
+        cells.push({ row: r, col: c, value: '' })
+    try {
+      const res = await dataApi.aggregate(props.tab.session.id, cells)
+      aggregateResult.value = res
+      window.dispatchEvent(new CustomEvent('grid:aggregate', { detail: { ...res, count: cells.length } }))
+    } catch {}
+  }, 200)
+})
 
 // Sync localRows when tab changes externally
 watch(() => props.tab.rows, (newRows) => {
@@ -882,14 +931,23 @@ watch(scrollTop, async (val) => {
 }
 
 /* Header */
-.grid-header-row {
+.grid-header-outer {
   display: flex;
   background: var(--bg-grid-header);
   border-bottom: 2px solid var(--border-strong);
   flex-shrink: 0;
-  overflow: hidden;
-  position: relative;
   z-index: 10;
+  position: relative;
+  overflow: hidden;
+}
+.grid-header-rownum {
+  flex-shrink: 0;
+  border-right: 2px solid var(--border-strong);
+  background: var(--bg-grid-header);
+}
+.grid-header-row {
+  display: flex;
+  will-change: transform;
 }
 .grid-header-cell {
   display: flex;
@@ -907,6 +965,7 @@ watch(scrollTop, async (val) => {
   user-select: none;
   flex-shrink: 0;
   gap: 4px;
+  overflow: hidden;
 }
 .grid-header-cell:hover { background: var(--bg-hover); color: var(--text-primary); }
 .grid-header-cell.selected { background: var(--bg-selected); color: var(--accent); }
