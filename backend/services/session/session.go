@@ -57,6 +57,28 @@ func (s *Store) Open(filePath string, config models.CsvConfig) (*models.FileSess
 	return sess, nil
 }
 
+// CreateSession creates a session from pre-parsed data (e.g., Excel import)
+func (s *Store) CreateSession(filePath string, config models.CsvConfig, headers []string, rows [][]string) *models.FileSession {
+	id := generateID()
+	columns := make([]models.Column, len(headers))
+	for i, h := range headers {
+		columns[i] = models.Column{Index: i, Name: h}
+	}
+	sess := &models.FileSession{
+		ID:        id,
+		FilePath:  filePath,
+		Config:    config,
+		Columns:   columns,
+		Rows:      rows,
+		TotalRows: len(rows),
+		Modified:  false,
+	}
+	s.mu.Lock()
+	s.sessions[id] = sess
+	s.mu.Unlock()
+	return sess
+}
+
 // Get retrieves a session by ID
 func (s *Store) Get(id string) (*models.FileSession, error) {
 	s.mu.RLock()

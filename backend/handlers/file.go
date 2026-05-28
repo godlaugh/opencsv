@@ -44,6 +44,7 @@ func OpenFile(c *gin.Context) {
 		"columns":   sess.Columns,
 		"totalRows": sess.TotalRows,
 		"rows":      firstRows,
+		"modified":  sess.Modified,
 	})
 }
 

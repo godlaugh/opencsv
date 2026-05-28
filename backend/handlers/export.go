@@ -34,21 +34,14 @@ func ImportExcel(c *gin.Context) {
 		return
 	}
 
-	// Create a session for the imported data
 	config := models.CsvConfig{
 		Delimiter: ",",
 		HasHeader: req.HasHeader,
 		Encoding:  "utf-8",
 	}
 
-	sess, err := session.Global.Open(req.FilePath, config)
-	if err != nil {
-		// If the file isn't parseable as CSV, create a synthetic session
-		_ = headers
-		_ = rows
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to create session: " + err.Error()})
-		return
-	}
+	// Create session directly from parsed Excel data (not by re-parsing as CSV)
+	sess := session.Global.CreateSession(req.FilePath, config, headers, rows)
 
 	firstRows := sess.Rows
 	if len(firstRows) > 200 {
@@ -63,6 +56,7 @@ func ImportExcel(c *gin.Context) {
 		"columns":   sess.Columns,
 		"totalRows": sess.TotalRows,
 		"rows":      firstRows,
+		"modified":  sess.Modified,
 	})
 }
 

@@ -1027,16 +1027,19 @@ watch(() => props.tab.rows, (newRows) => {
   localRows.value = newRows
 }, { deep: false })
 
-// Lazy load more rows when scrolling
+// Lazy load more rows when scrolling (append-only, uses offset to avoid re-downloading)
+let lazyLoading = false
 watch(scrollTop, async (val) => {
   const visibleEnd = Math.ceil((val + viewportH.value) / rowH) + BUFFER
-  if (visibleEnd >= localRows.value.length && localRows.value.length < props.tab.session.totalRows) {
-    loading.value = true
+  if (lazyLoading) return
+  if (visibleEnd >= localRows.value.length - 50 && localRows.value.length < props.tab.session.totalRows) {
+    lazyLoading = true
     try {
-      const { rows } = await fileApi.getRows(props.tab.session.id, 0, localRows.value.length + 1000)
-      localRows.value = rows
+      const offset = localRows.value.length
+      const { rows: newRows } = await fileApi.getRows(props.tab.session.id, offset, 1000)
+      if (newRows.length > 0) localRows.value = [...localRows.value, ...newRows]
     } finally {
-      loading.value = false
+      lazyLoading = false
     }
   }
 })
