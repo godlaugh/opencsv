@@ -74,6 +74,27 @@
       </button>
     </div>
 
+    <div class="divider-v" />
+
+    <!-- Export Operations -->
+    <div class="toolbar-group export-group">
+      <button class="btn btn-ghost tooltip" data-tip="Export as Excel (.xlsx)" :disabled="!activeTab" @click="exportExcel">
+        <FileSpreadsheet :size="14" />
+      </button>
+      <div class="export-dropdown">
+        <button class="btn btn-ghost tooltip" data-tip="Download as..." :disabled="!activeTab" @click="showExportMenu = !showExportMenu">
+          <Download :size="14" />
+        </button>
+        <div v-if="showExportMenu" class="export-menu" @mouseleave="showExportMenu = false">
+          <button @click="downloadFormat('json')">JSON</button>
+          <button @click="downloadFormat('markdown')">Markdown</button>
+          <button @click="downloadFormat('html')">HTML</button>
+          <button @click="downloadFormat('sql')">SQL</button>
+          <button @click="downloadFormat('latex')">LaTeX</button>
+        </div>
+      </div>
+    </div>
+
     <div class="flex-1" />
 
     <!-- Theme Toggle -->
@@ -94,17 +115,18 @@
 </template>
 
 <script setup lang="ts">
-import { computed, ref, inject } from 'vue'
+import { computed, ref, inject, onMounted, onUnmounted } from 'vue'
 import {
   FolderOpen, Save, SaveAll, Undo2, Redo2,
   Search, ArrowUpDown, Filter, Terminal,
-  Plus, Trash2, Sun, Moon, Monitor, Command
+  Plus, Trash2, Sun, Moon, Monitor, Command,
+  FileSpreadsheet, Download
 } from 'lucide-vue-next'
 import { useTabsStore } from '@/stores/tabs'
 import { useHistoryStore } from '@/stores/history'
 import { useSettingsStore } from '@/stores/settings'
 import { fileApi } from '@/api/file'
-import type { Tab } from '@/types'
+import { exportApi } from '@/api/data'
 
 const emit = defineEmits(['findReplace', 'sort', 'filter', 'sql', 'insertRow', 'deleteRows'])
 
@@ -116,6 +138,11 @@ const openCommandPalette = inject<() => void>('openCommandPalette')
 
 const fileInput = ref<HTMLInputElement | null>(null)
 const activeTab = computed(() => tabsStore.activeTab)
+const showExportMenu = ref(false)
+
+function onCmdOpen() { fileInput.value?.click() }
+onMounted(() => window.addEventListener('cmd:open', onCmdOpen))
+onUnmounted(() => window.removeEventListener('cmd:open', onCmdOpen))
 const canUndo = computed(() => activeTab.value ? historyStore.canUndo(activeTab.value.id) : false)
 const canRedo = computed(() => activeTab.value ? historyStore.canRedo(activeTab.value.id) : false)
 
@@ -205,12 +232,24 @@ async function saveAs() {
   }
 }
 
-function undo() {
-  // Handled by grid component
-  window.dispatchEvent(new CustomEvent('grid:undo'))
+function undo() { window.dispatchEvent(new CustomEvent('grid:undo')) }
+function redo() { window.dispatchEvent(new CustomEvent('grid:redo')) }
+
+async function exportExcel() {
+  const tab = activeTab.value
+  if (!tab) return
+  const defaultPath = tab.session.filePath.replace(/\.(csv|tsv|txt)$/i, '.xlsx')
+  const path = prompt('Export as Excel to:', defaultPath)
+  if (!path) return
+  try {
+    await exportApi.toExcel(tab.session.id, path)
+    notify?.('success', 'Exported to ' + path)
+  } catch (err: any) { notify?.('error', err.message) }
 }
-function redo() {
-  window.dispatchEvent(new CustomEvent('grid:redo'))
+
+function downloadFormat(format: string) {
+  showExportMenu.value = false
+  window.dispatchEvent(new CustomEvent('cmd:downloadFormat', { detail: format }))
 }
 </script>
 
@@ -259,4 +298,32 @@ function redo() {
   color: var(--text-muted);
   border-color: var(--border);
 }
+
+.export-group { position: relative; }
+.export-dropdown { position: relative; }
+.export-menu {
+  position: absolute;
+  top: calc(100% + 4px);
+  left: 0;
+  background: var(--bg-surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  box-shadow: var(--shadow-lg);
+  z-index: 1000;
+  min-width: 120px;
+  padding: 4px;
+}
+.export-menu button {
+  display: block;
+  width: 100%;
+  text-align: left;
+  padding: 6px 10px;
+  font-size: 12px;
+  color: var(--text-primary);
+  background: none;
+  border: none;
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+}
+.export-menu button:hover { background: var(--bg-hover); }
 </style>

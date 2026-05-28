@@ -17,15 +17,30 @@
             v-for="(col, ci) in visibleCols"
             :key="col.index"
             class="grid-header-cell"
-            :class="{ selected: isColSelected(col.index), sorted: sortedColIndex === col.index }"
+            :class="{ selected: isColSelected(col.index), sorted: sortedColIndex === col.index, editing: editingHeader === col.index }"
             :style="{ width: getColWidth(col.index) + 'px' }"
-            @click="selectCol(col.index, $event)"
+            @click="editingHeader === col.index ? null : selectCol(col.index, $event)"
             @dblclick="startHeaderEdit(ci, col)"
-            @contextmenu.prevent="openColCtx($event, col.index)"
+            @contextmenu.prevent="editingHeader === col.index ? null : openColCtx($event, col.index)"
           >
-            <span class="header-name truncate">{{ col.name }}</span>
-            <span v-if="sortedColIndex === col.index" class="sort-indicator">{{ sortOrder === 'asc' ? '↑' : '↓' }}</span>
-            <div class="col-resize-handle" @mousedown.stop="startColResize($event, col.index)" />
+            <template v-if="editingHeader === col.index">
+              <input
+                class="header-editor"
+                :value="headerEditValue"
+                @input="headerEditValue = ($event.target as HTMLInputElement).value"
+                @keydown.enter.prevent="commitHeaderEdit(col.index)"
+                @keydown.escape.prevent="editingHeader = null"
+                @blur="commitHeaderEdit(col.index)"
+                @click.stop
+                @dblclick.stop
+                @mousedown.stop
+              />
+            </template>
+            <template v-else>
+              <span class="header-name truncate">{{ col.name }}</span>
+              <span v-if="sortedColIndex === col.index" class="sort-indicator">{{ sortOrder === 'asc' ? '↑' : '↓' }}</span>
+              <div class="col-resize-handle" @mousedown.stop="startColResize($event, col.index)" />
+            </template>
           </div>
         </div>
       </div>
@@ -101,7 +116,7 @@
 </template>
 
 <script setup lang="ts">
-import { ref, computed, watch, onMounted, onUnmounted, nextTick, inject, provide } from 'vue'
+import { ref, computed, watch, onMounted, onUnmounted, nextTick, inject } from 'vue'
 import type { Tab, Cell, Selection, FindMatch, AggregateResult } from '@/types'
 import { fileApi } from '@/api/file'
 import { dataApi, exportApi } from '@/api/data'
@@ -555,9 +570,29 @@ function scrollToCell(row: number, col: number) {
 const editingHeader = ref<number | null>(null)
 const headerEditValue = ref('')
 
-function startHeaderEdit(ci: number, col: { index: number; name: string }) {
+function startHeaderEdit(_ci: number, col: { index: number; name: string }) {
   editingHeader.value = col.index
   headerEditValue.value = col.name
+  nextTick(() => {
+    const input = wrapRef.value?.querySelector('.header-editor') as HTMLInputElement | null
+    input?.focus()
+    input?.select()
+  })
+}
+
+async function commitHeaderEdit(colIdx: number) {
+  if (editingHeader.value === null) return
+  editingHeader.value = null
+  const col = columns.value.find(c => c.index === colIdx)
+  if (!col || col.name === headerEditValue.value) return
+  const newCols = columns.value.map(c =>
+    c.index === colIdx ? { ...c, name: headerEditValue.value } : c
+  )
+  props.tab.session.columns = newCols
+  try {
+    await fileApi.updateColumns(props.tab.session.id, newCols)
+    tabsStore.markModified(props.tab.id, true)
+  } catch {}
 }
 
 // Column resize
@@ -599,15 +634,37 @@ onMounted(() => {
   resizeObserver.observe(el)
   wrapRef.value?.focus()
 
-  // Listen for global undo/redo events from toolbar
+  // Grid action events from toolbar
   window.addEventListener('grid:undo', undoAction)
   window.addEventListener('grid:redo', redoAction)
+
+  // Command palette events
+  window.addEventListener('cmd:findReplace', _cmdFindReplace)
+  window.addEventListener('cmd:sort', _cmdSort)
+  window.addEventListener('cmd:filter', _cmdFilter)
+  window.addEventListener('cmd:sql', _cmdSql)
+  window.addEventListener('cmd:transform', _cmdTransform)
+  window.addEventListener('cmd:transpose', _cmdTranspose)
+  window.addEventListener('cmd:copyMarkdown', _cmdCopyMarkdown)
+  window.addEventListener('cmd:copyJson', _cmdCopyJson)
+  window.addEventListener('cmd:exportExcel', _cmdExportExcel)
+  window.addEventListener('cmd:downloadFormat', _cmdDownloadFormat)
 })
 
 onUnmounted(() => {
   resizeObserver?.disconnect()
   window.removeEventListener('grid:undo', undoAction)
   window.removeEventListener('grid:redo', redoAction)
+  window.removeEventListener('cmd:findReplace', _cmdFindReplace)
+  window.removeEventListener('cmd:sort', _cmdSort)
+  window.removeEventListener('cmd:filter', _cmdFilter)
+  window.removeEventListener('cmd:sql', _cmdSql)
+  window.removeEventListener('cmd:transform', _cmdTransform)
+  window.removeEventListener('cmd:transpose', _cmdTranspose)
+  window.removeEventListener('cmd:copyMarkdown', _cmdCopyMarkdown)
+  window.removeEventListener('cmd:copyJson', _cmdCopyJson)
+  window.removeEventListener('cmd:exportExcel', _cmdExportExcel)
+  window.removeEventListener('cmd:downloadFormat', _cmdDownloadFormat)
 })
 
 // Sort
@@ -829,14 +886,6 @@ async function onCtxSelect(id: string) {
   }
 }
 
-// Header edit
-const editingHeaderIdx = ref<number | null>(null)
-const headerEditVal = ref('')
-function startHeaderEdit2(idx: number, name: string) {
-  editingHeaderIdx.value = idx
-  headerEditVal.value = name
-}
-
 // Overlay panels
 const showFindReplace = ref(false)
 const showSort = ref(false)
@@ -874,7 +923,81 @@ async function deleteSelectedRows() {
   notify?.('success', `Deleted ${rows.length} row(s)`)
 }
 
-defineExpose({ openFindReplace, openSort, openFilter, openSql, insertRowAtActive, deleteSelectedRows })
+// ---- Export / format helpers ----
+
+function downloadText(content: string, filename: string, mime = 'text/plain') {
+  const blob = new Blob([content], { type: mime })
+  const url = URL.createObjectURL(blob)
+  const a = document.createElement('a')
+  a.href = url; a.download = filename
+  document.body.appendChild(a); a.click()
+  document.body.removeChild(a); URL.revokeObjectURL(url)
+}
+
+async function handleTranspose() {
+  loading.value = true
+  try {
+    await dataApi.transpose(props.tab.session.id)
+    const info = await fileApi.getInfo(props.tab.session.id)
+    props.tab.session.columns = info.columns
+    props.tab.session.totalRows = info.totalRows
+    const { rows } = await fileApi.getRows(props.tab.session.id, 0, Math.max(localRows.value.length, 1000))
+    localRows.value = rows
+    tabsStore.updateTabRows(props.tab.id, rows)
+    notify?.('success', 'Transposed')
+  } catch (err: any) { notify?.('error', err.message) }
+  finally { loading.value = false }
+}
+
+async function handleExportExcel() {
+  const defaultPath = props.tab.session.filePath.replace(/\.(csv|tsv|txt)$/i, '.xlsx')
+  const path = prompt('Export as Excel to:', defaultPath)
+  if (!path) return
+  try {
+    await exportApi.toExcel(props.tab.session.id, path)
+    notify?.('success', 'Exported to ' + path)
+  } catch (err: any) { notify?.('error', err.message) }
+}
+
+async function handleDownloadFormat(format: string) {
+  try {
+    const res = await exportApi.toFormat(props.tab.session.id, format, [])
+    const ext: Record<string, string> = { markdown: 'md', html: 'html', json: 'json', sql: 'sql', latex: 'tex', csv: 'csv' }
+    const base = props.tab.session.fileName.replace(/\.[^.]+$/, '')
+    downloadText(res.content, `${base}.${ext[format] ?? format}`)
+    notify?.('success', `Downloaded as ${format}`)
+  } catch (err: any) { notify?.('error', err.message) }
+}
+
+async function handleCopyMarkdownAll() {
+  try {
+    const res = await exportApi.toFormat(props.tab.session.id, 'markdown', [])
+    await navigator.clipboard.writeText(res.content)
+    notify?.('success', 'Copied entire file as Markdown')
+  } catch (err: any) { notify?.('error', err.message) }
+}
+
+async function handleCopyJsonAll() {
+  try {
+    const res = await exportApi.toFormat(props.tab.session.id, 'json', [])
+    await navigator.clipboard.writeText(res.content)
+    notify?.('success', 'Copied entire file as JSON')
+  } catch (err: any) { notify?.('error', err.message) }
+}
+
+// cmd: window event listeners (from command palette)
+const _cmdFindReplace = () => openFindReplace()
+const _cmdSort = () => openSort()
+const _cmdFilter = () => openFilter()
+const _cmdSql = () => openSql()
+const _cmdTransform = () => { showTransform.value = true }
+const _cmdTranspose = () => handleTranspose()
+const _cmdCopyMarkdown = () => handleCopyMarkdownAll()
+const _cmdCopyJson = () => handleCopyJsonAll()
+const _cmdExportExcel = () => handleExportExcel()
+const _cmdDownloadFormat = (e: Event) => handleDownloadFormat((e as CustomEvent).detail)
+
+defineExpose({ openFindReplace, openSort, openFilter, openSql, insertRowAtActive, deleteSelectedRows, handleDownloadFormat })
 
 // Aggregate stats — emit to window so StatusBar can pick up regardless of tree position
 const aggregateResult = ref<AggregateResult | null>(null)
@@ -983,6 +1106,22 @@ watch(scrollTop, async (val) => {
   background: transparent;
 }
 .col-resize-handle:hover { background: var(--accent); }
+
+.header-editor {
+  position: absolute;
+  inset: 0;
+  border: 2px solid var(--accent);
+  background: var(--bg-surface);
+  color: var(--text-primary);
+  font-family: var(--font-sans);
+  font-size: 11px;
+  font-weight: 600;
+  padding: 0 6px;
+  outline: none;
+  z-index: 20;
+  width: 100%;
+}
+.grid-header-cell.editing { overflow: visible; }
 
 /* Body */
 .grid-body {

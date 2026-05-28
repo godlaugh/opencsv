@@ -112,49 +112,61 @@ func ExportFormat(c *gin.Context) {
 		return
 	}
 
-	// Build a 2D selection map
-	type cellKey struct{ r, c int }
-	selection := make(map[cellKey]string)
-	minRow, maxRow, minCol, maxCol := 1<<30, -1, 1<<30, -1
-	for _, cell := range req.Cells {
-		selection[cellKey{cell.Row, cell.Col}] = getCellValue(sess.Rows[cell.Row], cell.Col)
-		if cell.Row < minRow {
-			minRow = cell.Row
-		}
-		if cell.Row > maxRow {
-			maxRow = cell.Row
-		}
-		if cell.Col < minCol {
-			minCol = cell.Col
-		}
-		if cell.Col > maxCol {
-			maxCol = cell.Col
-		}
-	}
+	var rows [][]string
+	var headers []string
 
-	if maxRow == -1 {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "no cells selected"})
-		return
-	}
-
-	// Build grid from selection
-	rows := make([][]string, maxRow-minRow+1)
-	for ri := range rows {
-		row := make([]string, maxCol-minCol+1)
-		for ci := range row {
-			row[ci] = selection[cellKey{minRow + ri, minCol + ci}]
+	if len(req.Cells) == 0 {
+		// Empty selection = export entire file
+		rows = sess.Rows
+		headers = make([]string, len(sess.Columns))
+		for i, col := range sess.Columns {
+			headers[i] = col.Name
 		}
-		rows[ri] = row
-	}
+	} else {
+		// Build a 2D selection map
+		type cellKey struct{ r, c int }
+		selection := make(map[cellKey]string)
+		minRow, maxRow, minCol, maxCol := 1<<30, -1, 1<<30, -1
+		for _, cell := range req.Cells {
+			if cell.Row < len(sess.Rows) {
+				selection[cellKey{cell.Row, cell.Col}] = getCellValue(sess.Rows[cell.Row], cell.Col)
+			}
+			if cell.Row < minRow {
+				minRow = cell.Row
+			}
+			if cell.Row > maxRow {
+				maxRow = cell.Row
+			}
+			if cell.Col < minCol {
+				minCol = cell.Col
+			}
+			if cell.Col > maxCol {
+				maxCol = cell.Col
+			}
+		}
 
-	// Column headers for the selected columns
-	headers := make([]string, maxCol-minCol+1)
-	for ci := range headers {
-		colIdx := minCol + ci
-		if colIdx < len(sess.Columns) {
-			headers[ci] = sess.Columns[colIdx].Name
-		} else {
-			headers[ci] = fmt.Sprintf("Col %d", colIdx+1)
+		if maxRow == -1 {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "no cells selected"})
+			return
+		}
+
+		rows = make([][]string, maxRow-minRow+1)
+		for ri := range rows {
+			row := make([]string, maxCol-minCol+1)
+			for ci := range row {
+				row[ci] = selection[cellKey{minRow + ri, minCol + ci}]
+			}
+			rows[ri] = row
+		}
+
+		headers = make([]string, maxCol-minCol+1)
+		for ci := range headers {
+			colIdx := minCol + ci
+			if colIdx < len(sess.Columns) {
+				headers[ci] = sess.Columns[colIdx].Name
+			} else {
+				headers[ci] = fmt.Sprintf("Col %d", colIdx+1)
+			}
 		}
 	}
 

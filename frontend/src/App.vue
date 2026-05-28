@@ -12,7 +12,6 @@
 
 <script setup lang="ts">
 import { ref, computed, provide, onMounted, onUnmounted } from 'vue'
-import { createPinia } from 'pinia'
 import AppLayout from '@/components/layout/AppLayout.vue'
 import CommandPalette from '@/components/CommandPalette.vue'
 import { useSettingsStore } from '@/stores/settings'
@@ -46,6 +45,14 @@ function showNotification(type: Notification['type'], message: string) {
 provide('notify', showNotification)
 provide('openCommandPalette', () => { showCommandPalette.value = true })
 
+function saveActiveTab() {
+  const tab = tabsStore.activeTab
+  if (!tab) return
+  fileApi.save(tab.session.id)
+    .then(() => { tabsStore.markModified(tab.session.id, false); showNotification('success', 'File saved') })
+    .catch(err => showNotification('error', err.message))
+}
+
 // Global keyboard shortcuts
 function onKeydown(e: KeyboardEvent) {
   const meta = e.metaKey || e.ctrlKey
@@ -61,17 +68,7 @@ function onKeydown(e: KeyboardEvent) {
     return
   }
 
-  if (meta && e.key === 's') {
-    e.preventDefault()
-    const tab = tabsStore.activeTab
-    if (tab) {
-      fileApi.save(tab.session.id).then(() => {
-        tabsStore.markModified(tab.session.id, false)
-        showNotification('success', 'File saved')
-      }).catch(err => showNotification('error', err.message))
-    }
-    return
-  }
+  if (meta && e.key === 's') { e.preventDefault(); saveActiveTab(); return }
 
   if (meta && e.key === 'w') {
     e.preventDefault()
@@ -81,8 +78,20 @@ function onKeydown(e: KeyboardEvent) {
   }
 }
 
-onMounted(() => window.addEventListener('keydown', onKeydown))
-onUnmounted(() => window.removeEventListener('keydown', onKeydown))
+// Command palette window events
+function onCmdSave() { saveActiveTab() }
+function onCmdTheme(e: Event) { settings.setTheme((e as CustomEvent).detail) }
+
+onMounted(() => {
+  window.addEventListener('keydown', onKeydown)
+  window.addEventListener('cmd:save', onCmdSave)
+  window.addEventListener('cmd:theme', onCmdTheme)
+})
+onUnmounted(() => {
+  window.removeEventListener('keydown', onKeydown)
+  window.removeEventListener('cmd:save', onCmdSave)
+  window.removeEventListener('cmd:theme', onCmdTheme)
+})
 </script>
 
 <style scoped>
