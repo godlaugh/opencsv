@@ -35,8 +35,12 @@ export interface Tab {
   loading: boolean
   filterActive: boolean
   filteredIndices: number[] | null
-  /** Per-column quick filters keyed by column index */
-  colFilters?: Record<number, ColumnQuickFilter>
+  /**
+   * Single source of truth for all filtering. Both the per-column header
+   * dropdown and the global Filter dialog read from and write to this group,
+   * so they stay in sync (SmoothCSV-style).
+   */
+  filterGroup?: FilterGroup | null
 }
 
 export interface SortKey {

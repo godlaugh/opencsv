@@ -23,7 +23,14 @@
               <option v-for="op in operators" :key="op.value" :value="op.value">{{ op.label }}</option>
             </select>
             <input
-              v-if="!noValueOps.includes(cond.operator)"
+              v-if="listOps.includes(cond.operator)"
+              class="input flex-1"
+              :value="(cond.values ?? []).join(', ')"
+              @input="cond.values = ($event.target as HTMLInputElement).value.split(',').map(s => s.trim()).filter(Boolean)"
+              placeholder="value1, value2, ..."
+            />
+            <input
+              v-else-if="!noValueOps.includes(cond.operator)"
               class="input flex-1"
               v-model="cond.value"
               placeholder="Value..."
@@ -49,7 +56,7 @@ import { reactive } from 'vue'
 import { X, Trash2, Plus } from 'lucide-vue-next'
 import type { Column, FilterGroup } from '@/types'
 
-const props = defineProps<{ columns: Column[] }>()
+const props = defineProps<{ columns: Column[]; initial?: FilterGroup | null }>()
 const emit = defineEmits<{ close: []; filter: [group: FilterGroup] }>()
 
 const operators = [
@@ -61,17 +68,34 @@ const operators = [
   { value: 'endsWith', label: 'ends with' },
   { value: 'gt', label: 'greater than' },
   { value: 'lt', label: 'less than' },
+  { value: 'in', label: 'is one of' },
+  { value: 'notIn', label: 'is not one of' },
   { value: 'empty', label: 'is empty' },
   { value: 'notEmpty', label: 'is not empty' },
   { value: 'regex', label: 'matches regex' },
 ]
 
 const noValueOps = ['empty', 'notEmpty']
+const listOps = ['in', 'notIn']
 
-const group = reactive<FilterGroup>({
-  logic: 'AND',
-  conditions: [{ colIndex: props.columns[0]?.index ?? 0, operator: 'contains', value: '' }]
-})
+// Initialize from an existing filter group when present, so the global dialog
+// and the per-column header filters stay in sync.
+const group = reactive<FilterGroup>(
+  props.initial && props.initial.conditions.length > 0
+    ? {
+        logic: props.initial.logic,
+        conditions: props.initial.conditions.map(c => ({
+          colIndex: c.colIndex,
+          operator: c.operator,
+          value: c.value,
+          ...(c.values ? { values: [...c.values] } : {})
+        }))
+      }
+    : {
+        logic: 'AND',
+        conditions: [{ colIndex: props.columns[0]?.index ?? 0, operator: 'contains', value: '' }]
+      }
+)
 
 function addCondition() {
   group.conditions.push({ colIndex: props.columns[0]?.index ?? 0, operator: 'contains', value: '' })

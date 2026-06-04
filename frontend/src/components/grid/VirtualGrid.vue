@@ -3,7 +3,7 @@
     <!-- Overlays / Panels -->
     <FindReplaceBar v-if="showFindReplace" :tab="tab" @close="showFindReplace = false" @matches="onFindMatches" />
     <SortDialog v-if="showSort" :columns="tab.session.columns" @close="showSort = false" @sort="onSort" />
-    <FilterDialog v-if="showFilter" :columns="tab.session.columns" @close="showFilter = false" @filter="onFilter" />
+    <FilterDialog v-if="showFilter" :columns="tab.session.columns" :initial="tab.filterGroup" @close="showFilter = false" @filter="onFilter" />
     <SqlConsole v-if="showSql" :tab="tab" @close="showSql = false" />
     <ContextMenu v-if="ctxMenu" :items="ctxItems" :x="ctxMenu.x" :y="ctxMenu.y" @close="ctxMenu = null" @select="onCtxSelect" />
     <TransformMenu v-if="showTransform" @close="showTransform = false" @apply="onTransform" />
@@ -13,11 +13,24 @@
       :col-index="colFilterMenu.colIndex"
       :col-name="colFilterMenu.colName"
       :anchor="colFilterMenu.anchor"
-      :initial="tab.colFilters?.[colFilterMenu.colIndex]"
+      :initial="columnInitialFilter(colFilterMenu.colIndex)"
       @close="colFilterMenu = null"
       @apply="applyColFilter"
       @sort="applyColSort"
     />
+
+    <!-- Active filter (WHERE) bar — shared by per-column + global filter -->
+    <div v-if="tab.filterActive && filterExpr" class="filter-bar">
+      <span class="filter-bar-where">WHERE</span>
+      <span class="filter-bar-expr truncate" :title="filterExpr">{{ filterExpr }}</span>
+      <span class="filter-bar-count">{{ tab.filteredIndices?.length ?? 0 }} rows</span>
+      <button class="filter-bar-btn" title="Edit filter" @click="openFilter">
+        <Pencil :size="13" />
+      </button>
+      <button class="filter-bar-btn" title="Clear filter" @click="clearAllFilters">
+        <X :size="14" />
+      </button>
+    </div>
 
     <!-- Fixed header: row-num gutter + scrollable column headers -->
     <div class="grid-header-outer">
@@ -52,13 +65,13 @@
               <span v-if="sortedColIndex === col.index" class="sort-indicator">{{ sortOrder === 'asc' ? '↑' : '↓' }}</span>
               <button
                 class="header-filter-btn"
-                :class="{ active: !!tab.colFilters?.[col.index] }"
-                :title="tab.colFilters?.[col.index] ? 'Filter active — click to edit' : 'Sort & Filter'"
+                :class="{ active: columnHasFilter(col.index) }"
+                :title="columnHasFilter(col.index) ? 'Filter active — click to edit' : 'Sort & Filter'"
                 @click.stop="openColFilter($event, col.index, col.name)"
                 @mousedown.stop
                 @dblclick.stop
               >
-                <Filter :size="11" :fill="tab.colFilters?.[col.index] ? 'currentColor' : 'none'" />
+                <Filter :size="11" :fill="columnHasFilter(col.index) ? 'currentColor' : 'none'" />
               </button>
               <div class="col-resize-handle" @mousedown.stop="startColResize($event, col.index)" />
             </template>
@@ -138,7 +151,7 @@
 
 <script setup lang="ts">
 import { ref, computed, watch, onMounted, onUnmounted, nextTick, inject } from 'vue'
-import type { Tab, Cell, Selection, FindMatch, AggregateResult, ColumnQuickFilter, SortKey, FilterCondition, FilterGroup } from '@/types'
+import type { Tab, Cell, Selection, FindMatch, AggregateResult, ColumnQuickFilter, SortKey, FilterGroup } from '@/types'
 import { fileApi } from '@/api/file'
 import { dataApi, exportApi } from '@/api/data'
 import { useTabsStore } from '@/stores/tabs'
@@ -150,7 +163,7 @@ import SqlConsole from '@/components/panels/SqlConsole.vue'
 import ContextMenu from '@/components/ContextMenu.vue'
 import TransformMenu from '@/components/dialogs/TransformMenu.vue'
 import ColumnFilterMenu from '@/components/grid/ColumnFilterMenu.vue'
-import { Filter } from 'lucide-vue-next'
+import { Filter, Pencil, X } from 'lucide-vue-next'
 
 const props = defineProps<{ tab: Tab }>()
 const tabsStore = useTabsStore()
@@ -703,13 +716,10 @@ async function onSort(keys: any[]) {
       sortedColIndex.value = keys[0].colIndex
       sortOrder.value = keys[0].order
     }
-    // Re-apply any active column filters against the new order
-    if (props.tab.filterActive && Object.keys(props.tab.colFilters || {}).length > 0) {
-      const conds = buildColFilterConditions()
-      if (conds.length > 0) {
-        const result = await dataApi.filter(props.tab.session.id, { logic: 'AND', conditions: conds })
-        props.tab.filteredIndices = result.matchIndices
-      }
+    // Re-apply the active filter against the new order
+    if (props.tab.filterActive && props.tab.filterGroup && props.tab.filterGroup.conditions.length > 0) {
+      const result = await dataApi.filter(props.tab.session.id, props.tab.filterGroup)
+      props.tab.filteredIndices = result.matchIndices
     }
     notify?.('success', 'Sorted')
   } catch (err: any) {
@@ -719,22 +729,11 @@ async function onSort(keys: any[]) {
   }
 }
 
-// Filter
-async function onFilter(group: any) {
+// Global filter dialog → set the shared filter group, then run.
+async function onFilter(group: FilterGroup) {
   showFilter.value = false
-  try {
-    // filteredIndices reference the full dataset — make sure it's all loaded
-    await ensureAllRowsLoaded()
-    loading.value = true
-    const result = await dataApi.filter(props.tab.session.id, group)
-    props.tab.filterActive = true
-    props.tab.filteredIndices = result.matchIndices
-    notify?.('info', `${result.matchCount} rows match`)
-  } catch (err: any) {
-    notify?.('error', err.message)
-  } finally {
-    loading.value = false
-  }
+  props.tab.filterGroup = group && group.conditions.length > 0 ? group : null
+  await applyFilterGroup()
 }
 
 // Ensure the full source dataset is loaded into localRows. Required before
@@ -779,47 +778,78 @@ function openColFilter(e: MouseEvent, colIndex: number, colName: string) {
   }
 }
 
-function buildColFilterConditions(): FilterCondition[] {
-  const conds: FilterCondition[] = []
-  const filters = props.tab.colFilters || {}
-  for (const key of Object.keys(filters)) {
-    const ci = Number(key)
-    const f = filters[ci]
-    if (!f) continue
-    if (f.mode === 'values' && f.selectedValues && f.selectedValues.length > 0) {
-      conds.push({ colIndex: ci, operator: 'in', value: '', values: f.selectedValues })
-    } else if (f.mode === 'condition' && f.operator) {
-      conds.push({ colIndex: ci, operator: f.operator, value: f.value ?? '' })
-    }
-  }
-  return conds
+// --- Unified filter state (shared by per-column menu + global dialog) ---
+
+// Does the active filter group reference this column?
+function columnHasFilter(colIndex: number): boolean {
+  const g = props.tab.filterGroup
+  return !!g && g.conditions.some(c => c.colIndex === colIndex)
 }
 
-async function applyColFilter(filter: ColumnQuickFilter | null) {
-  if (!props.tab.colFilters) props.tab.colFilters = {}
-  const colIndex = colFilterMenu.value?.colIndex
-  if (colIndex === undefined) return
+function colName(colIndex: number): string {
+  return columns.value.find(c => c.index === colIndex)?.name ?? `Col ${colIndex + 1}`
+}
 
-  if (filter === null) {
-    delete props.tab.colFilters[colIndex]
-  } else {
-    props.tab.colFilters[colIndex] = filter
+// Human-readable, SQL-like WHERE expression for the filter bar.
+const filterExpr = computed(() => {
+  const g = props.tab.filterGroup
+  if (!g || g.conditions.length === 0) return ''
+  const quote = (v: string) => `'${v.replace(/'/g, "''")}'`
+  const parts = g.conditions.map(c => {
+    const name = colName(c.colIndex)
+    switch (c.operator) {
+      case 'in': return `${name} IN (${(c.values ?? []).map(quote).join(', ')})`
+      case 'notIn': return `${name} NOT IN (${(c.values ?? []).map(quote).join(', ')})`
+      case 'eq': return `${name} = ${quote(c.value)}`
+      case 'ne': return `${name} != ${quote(c.value)}`
+      case 'contains': return `${name} contains ${quote(c.value)}`
+      case 'notContains': return `${name} not contains ${quote(c.value)}`
+      case 'startsWith': return `${name} starts with ${quote(c.value)}`
+      case 'endsWith': return `${name} ends with ${quote(c.value)}`
+      case 'gt': return `${name} > ${c.value}`
+      case 'lt': return `${name} < ${c.value}`
+      case 'empty': return `${name} is empty`
+      case 'notEmpty': return `${name} is not empty`
+      case 'regex': return `${name} matches /${c.value}/`
+      default: return `${name} ${c.operator} ${quote(c.value)}`
+    }
+  })
+  return parts.join(g.logic === 'OR' ? ' OR ' : ' AND ')
+})
+
+function clearAllFilters() {
+  props.tab.filterGroup = null
+  props.tab.filterActive = false
+  props.tab.filteredIndices = null
+  notify?.('info', 'Filter cleared')
+}
+
+// Convert the per-column condition (if any) into the shape ColumnFilterMenu wants.
+function columnInitialFilter(colIndex: number): ColumnQuickFilter | undefined {
+  const g = props.tab.filterGroup
+  if (!g) return undefined
+  const cond = g.conditions.find(c => c.colIndex === colIndex)
+  if (!cond) return undefined
+  if (cond.operator === 'in') {
+    return { mode: 'values', selectedValues: cond.values ?? [] }
   }
+  return { mode: 'condition', operator: cond.operator, value: cond.value }
+}
 
-  const conditions = buildColFilterConditions()
-  if (conditions.length === 0) {
-    // clear all
+// Re-run whatever is currently in tab.filterGroup against the backend.
+async function applyFilterGroup() {
+  const group = props.tab.filterGroup
+  if (!group || group.conditions.length === 0) {
+    props.tab.filterGroup = null
     props.tab.filterActive = false
     props.tab.filteredIndices = null
     notify?.('info', 'Filter cleared')
     return
   }
-
   try {
     // filteredIndices reference the full dataset — make sure it's all loaded
     await ensureAllRowsLoaded()
     loading.value = true
-    const group: FilterGroup = { logic: 'AND', conditions }
     const result = await dataApi.filter(props.tab.session.id, group)
     props.tab.filterActive = true
     props.tab.filteredIndices = result.matchIndices
@@ -829,6 +859,31 @@ async function applyColFilter(filter: ColumnQuickFilter | null) {
   } finally {
     loading.value = false
   }
+}
+
+// Per-column menu applies/clears the condition for one column, then re-runs.
+async function applyColFilter(filter: ColumnQuickFilter | null) {
+  const colIndex = colFilterMenu.value?.colIndex
+  if (colIndex === undefined) return
+
+  const group: FilterGroup = props.tab.filterGroup
+    ? { logic: props.tab.filterGroup.logic, conditions: [...props.tab.filterGroup.conditions] }
+    : { logic: 'AND', conditions: [] }
+
+  // Drop existing conditions for this column
+  group.conditions = group.conditions.filter(c => c.colIndex !== colIndex)
+
+  // Add the new condition for this column (if any)
+  if (filter) {
+    if (filter.mode === 'values' && filter.selectedValues && filter.selectedValues.length > 0) {
+      group.conditions.push({ colIndex, operator: 'in', value: '', values: filter.selectedValues })
+    } else if (filter.mode === 'condition' && filter.operator) {
+      group.conditions.push({ colIndex, operator: filter.operator, value: filter.value ?? '' })
+    }
+  }
+
+  props.tab.filterGroup = group.conditions.length > 0 ? group : null
+  await applyFilterGroup()
 }
 
 async function applyColSort(key: SortKey) {
@@ -841,14 +896,11 @@ async function applyColSort(key: SortKey) {
     await ensureAllRowsLoaded()
     sortedColIndex.value = key.colIndex
     sortOrder.value = key.order
-    // Re-apply column filters so filteredIndices line up with new order
-    if (Object.keys(props.tab.colFilters || {}).length > 0) {
-      const conds = buildColFilterConditions()
-      if (conds.length > 0) {
-        const result = await dataApi.filter(props.tab.session.id, { logic: 'AND', conditions: conds })
-        props.tab.filterActive = true
-        props.tab.filteredIndices = result.matchIndices
-      }
+    // Re-apply the active filter so filteredIndices line up with the new order
+    if (props.tab.filterGroup && props.tab.filterGroup.conditions.length > 0) {
+      const result = await dataApi.filter(props.tab.session.id, props.tab.filterGroup)
+      props.tab.filterActive = true
+      props.tab.filteredIndices = result.matchIndices
     }
     notify?.('success', `Sorted by ${key.order}`)
   } catch (err: any) {
@@ -1267,6 +1319,54 @@ watch(scrollTop, async (val) => {
   background: transparent;
 }
 .col-resize-handle:hover { background: var(--accent); }
+
+/* WHERE filter bar */
+.filter-bar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  height: 32px;
+  padding: 0 10px;
+  background: color-mix(in srgb, var(--accent) 8%, var(--bg-surface));
+  border-bottom: 1px solid var(--border);
+  flex-shrink: 0;
+  font-size: 12px;
+}
+.filter-bar-where {
+  font-family: var(--font-mono);
+  font-weight: 700;
+  font-size: 11px;
+  color: var(--accent);
+  letter-spacing: 0.5px;
+  flex-shrink: 0;
+}
+.filter-bar-expr {
+  font-family: var(--font-mono);
+  color: var(--text-primary);
+  flex: 1;
+  min-width: 0;
+}
+.filter-bar-count {
+  font-size: 11px;
+  color: var(--text-muted);
+  flex-shrink: 0;
+  font-variant-numeric: tabular-nums;
+}
+.filter-bar-btn {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 24px;
+  height: 24px;
+  border: none;
+  background: transparent;
+  color: var(--text-secondary);
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+  flex-shrink: 0;
+  transition: background 0.1s, color 0.1s;
+}
+.filter-bar-btn:hover { background: var(--bg-hover); color: var(--accent); }
 
 .header-filter-btn {
   display: flex;
