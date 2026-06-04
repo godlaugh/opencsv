@@ -16,7 +16,7 @@ import AppLayout from '@/components/layout/AppLayout.vue'
 import CommandPalette from '@/components/CommandPalette.vue'
 import { useSettingsStore } from '@/stores/settings'
 import { useTabsStore } from '@/stores/tabs'
-import { fileApi } from '@/api/file'
+import { saveSession } from '@/utils/fileSystem'
 
 const settings = useSettingsStore()
 const tabsStore = useTabsStore()
@@ -48,8 +48,8 @@ provide('openCommandPalette', () => { showCommandPalette.value = true })
 function saveActiveTab() {
   const tab = tabsStore.activeTab
   if (!tab) return
-  fileApi.save(tab.session.id)
-    .then(() => { tabsStore.markModified(tab.session.id, false); showNotification('success', 'File saved') })
+  saveSession(tab.session.id)
+    .then(where => { tabsStore.markModified(tab.session.id, false); showNotification('success', where === 'disk' ? 'Saved to file' : 'File saved') })
     .catch(err => showNotification('error', err.message))
 }
 

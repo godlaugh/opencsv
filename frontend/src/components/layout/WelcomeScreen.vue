@@ -13,11 +13,11 @@
       <p class="welcome-subtitle">The open-source CSV editor for modern data workflows</p>
 
       <div class="welcome-actions">
-        <label class="btn btn-primary welcome-btn">
+        <button class="btn btn-primary welcome-btn" @click="openFile">
           <FolderOpen :size="16" />
           Open CSV File
-          <input type="file" accept=".csv,.tsv,.txt,.xlsx" style="display:none" @change="onFileInput" multiple />
-        </label>
+        </button>
+        <input ref="fileInput" type="file" accept=".csv,.tsv,.txt,.xlsx" style="display:none" @change="onFileInput" multiple />
       </div>
 
       <div class="welcome-features">
@@ -50,38 +50,10 @@
 </template>
 
 <script setup lang="ts">
-import { inject } from 'vue'
 import { FolderOpen, Zap, Database, ArrowUpDown, FileSpreadsheet } from 'lucide-vue-next'
-import { useTabsStore } from '@/stores/tabs'
-import { fileApi } from '@/api/file'
+import { useFileOpener } from '@/composables/useFileOpener'
 
-const tabsStore = useTabsStore()
-const notify = inject<(type: string, msg: string) => void>('notify')
-
-async function onFileInput(e: Event) {
-  const files = (e.target as HTMLInputElement).files
-  if (!files) return
-  for (const file of Array.from(files)) {
-    const arrayBuffer = await file.arrayBuffer()
-    const bytes = new Uint8Array(arrayBuffer)
-    try {
-      const response = await fetch('/api/files/upload', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/octet-stream', 'X-Filename': encodeURIComponent(file.name) },
-        body: bytes
-      })
-      const data = await response.json()
-      if (data.error) throw new Error(data.error)
-      const isExcel = file.name.endsWith('.xlsx') || file.name.endsWith('.xls')
-      const session = isExcel ? await fileApi.importExcel(data.filePath) : await fileApi.open(data.filePath)
-      tabsStore.addTab(session, session.rows)
-      notify?.('success', `Opened ${file.name}`)
-    } catch (err: any) {
-      notify?.('error', err.message)
-    }
-  }
-  ;(e.target as HTMLInputElement).value = ''
-}
+const { fileInput, openFile, onFileInput } = useFileOpener()
 </script>
 
 <style scoped>

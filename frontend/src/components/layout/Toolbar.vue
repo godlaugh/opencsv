@@ -15,11 +15,11 @@
 
     <!-- File Operations -->
     <div class="toolbar-group">
-      <label class="btn btn-ghost tooltip" data-tip="Open File (⌘O)">
+      <button class="btn btn-ghost tooltip" data-tip="Open File (⌘O)" @click="openFile">
         <FolderOpen :size="14" />
         <span>Open</span>
-        <input ref="fileInput" type="file" accept=".csv,.tsv,.txt,.xlsx" style="display:none" @change="onFileInput" multiple />
-      </label>
+      </button>
+      <input ref="fileInput" type="file" accept=".csv,.tsv,.txt,.xlsx" style="display:none" @change="onFileInput" multiple />
 
       <button class="btn btn-ghost tooltip" data-tip="Save (⌘S)" :disabled="!activeTab" @click="saveFile">
         <Save :size="14" />
@@ -127,6 +127,8 @@ import { useHistoryStore } from '@/stores/history'
 import { useSettingsStore } from '@/stores/settings'
 import { fileApi } from '@/api/file'
 import { exportApi } from '@/api/data'
+import { useFileOpener } from '@/composables/useFileOpener'
+import { saveSession } from '@/utils/fileSystem'
 
 const emit = defineEmits(['findReplace', 'sort', 'filter', 'sql', 'insertRow', 'deleteRows'])
 
@@ -136,11 +138,11 @@ const settings = useSettingsStore()
 const notify = inject<(type: string, msg: string) => void>('notify')
 const openCommandPalette = inject<() => void>('openCommandPalette')
 
-const fileInput = ref<HTMLInputElement | null>(null)
+const { fileInput, openFile, onFileInput } = useFileOpener()
 const activeTab = computed(() => tabsStore.activeTab)
 const showExportMenu = ref(false)
 
-function onCmdOpen() { fileInput.value?.click() }
+function onCmdOpen() { openFile() }
 onMounted(() => window.addEventListener('cmd:open', onCmdOpen))
 onUnmounted(() => window.removeEventListener('cmd:open', onCmdOpen))
 const canUndo = computed(() => activeTab.value ? historyStore.canUndo(activeTab.value.id) : false)
@@ -158,61 +160,13 @@ function cycleTheme() {
   settings.setTheme(order[(idx + 1) % 3])
 }
 
-async function onFileInput(e: Event) {
-  const files = (e.target as HTMLInputElement).files
-  if (!files) return
-  for (const file of Array.from(files)) {
-    await openLocalFile(file)
-  }
-  ;(e.target as HTMLInputElement).value = ''
-}
-
-async function openLocalFile(file: File) {
-  // For local files, we pass a "virtual" path. In a full desktop app, the OS path would be used.
-  // In the browser context, we upload the file content to the backend first.
-  // For now we use the file path (only works if the server has access to the file system)
-  // We'll use a workaround: send file content via form data
-  try {
-    const formData = new FormData()
-    formData.append('file', file)
-
-    // Use the file's webkitRelativePath or name as a hint
-    // We need to send the actual content to the server
-    // For simplicity in dev: use a temp path approach via the API
-    const arrayBuffer = await file.arrayBuffer()
-    const bytes = new Uint8Array(arrayBuffer)
-
-    // Write to a temp file on the server and open it
-    const response = await fetch('/api/files/upload', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/octet-stream', 'X-Filename': encodeURIComponent(file.name) },
-      body: bytes
-    })
-    const data = await response.json()
-    if (data.error) throw new Error(data.error)
-
-    const isExcel = file.name.endsWith('.xlsx') || file.name.endsWith('.xls')
-    let session
-    if (isExcel) {
-      session = await fileApi.importExcel(data.filePath)
-    } else {
-      session = await fileApi.open(data.filePath)
-    }
-
-    tabsStore.addTab(session, session.rows)
-    notify?.('success', `Opened ${file.name}`)
-  } catch (err: any) {
-    notify?.('error', err.message)
-  }
-}
-
 async function saveFile() {
   const tab = activeTab.value
   if (!tab) return
   try {
-    await fileApi.save(tab.session.id)
+    const where = await saveSession(tab.session.id)
     tabsStore.markModified(tab.session.id, false)
-    notify?.('success', 'File saved')
+    notify?.('success', where === 'disk' ? 'Saved to file' : 'File saved')
   } catch (err: any) {
     notify?.('error', err.message)
   }

@@ -1,8 +1,11 @@
 package handlers
 
 import (
+	"bytes"
 	"net/http"
 	"opencsv/models"
+	csvparser "opencsv/services/csv"
+	"opencsv/services/excel"
 	"opencsv/services/session"
 	"path/filepath"
 	"strconv"
@@ -102,6 +105,47 @@ func SaveFile(c *gin.Context) {
 	}
 
 	c.JSON(http.StatusOK, gin.H{"ok": true})
+}
+
+// GetContent handles GET /api/files/:id/content
+// Returns the serialized session bytes (CSV or XLSX, inferred from the
+// original file extension) so the frontend can write them back to a
+// File System Access API handle.
+func GetContent(c *gin.Context) {
+	id := c.Param("id")
+	sess, err := session.Global.Get(id)
+	if err != nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": err.Error()})
+		return
+	}
+
+	headers := make([]string, len(sess.Columns))
+	for i, col := range sess.Columns {
+		headers[i] = col.Name
+	}
+
+	ext := strings.ToLower(filepath.Ext(sess.FilePath))
+	if ext == ".xlsx" || ext == ".xls" {
+		data, err := excel.ExportBytes(headers, sess.Rows)
+		if err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+			return
+		}
+		c.Data(http.StatusOK, "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", data)
+		return
+	}
+
+	delimiter := sess.Config.Delimiter
+	if delimiter == "" {
+		delimiter = ","
+	}
+
+	var buf bytes.Buffer
+	if err := csvparser.WriteCSV(&buf, headers, sess.Rows, delimiter, sess.Config.Encoding); err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	c.Data(http.StatusOK, "text/csv; charset=utf-8", buf.Bytes())
 }
 
 // CloseFile handles DELETE /api/files/:id

@@ -66,6 +66,16 @@ export const dataApi = {
 
   transpose(id: string) {
     return client.post(`/files/${id}/transpose`).then(r => r.data)
+  },
+
+  getColumnValues(id: string, colIndex: number, search = '', limit = 500) {
+    return client
+      .get(`/files/${id}/columns/${colIndex}/values`, { params: { q: search, limit } })
+      .then(r => r.data as {
+        values: { value: string; count: number }[]
+        total: number
+        truncated: boolean
+      })
   }
 }
 

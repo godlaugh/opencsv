@@ -42,9 +42,10 @@ type SortKey struct {
 
 // FilterCondition defines one filter condition
 type FilterCondition struct {
-	ColIndex int    `json:"colIndex"`
-	Operator string `json:"operator"` // "eq","ne","contains","startsWith","endsWith","gt","lt","regex","empty","notEmpty"
-	Value    string `json:"value"`
+	ColIndex int      `json:"colIndex"`
+	Operator string   `json:"operator"` // "eq","ne","contains","startsWith","endsWith","gt","lt","regex","empty","notEmpty","in","notIn"
+	Value    string   `json:"value"`
+	Values   []string `json:"values,omitempty"` // used by "in" / "notIn"
 }
 
 // FilterGroup holds a logical group of conditions

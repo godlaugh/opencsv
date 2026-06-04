@@ -7,6 +7,17 @@
     <SqlConsole v-if="showSql" :tab="tab" @close="showSql = false" />
     <ContextMenu v-if="ctxMenu" :items="ctxItems" :x="ctxMenu.x" :y="ctxMenu.y" @close="ctxMenu = null" @select="onCtxSelect" />
     <TransformMenu v-if="showTransform" @close="showTransform = false" @apply="onTransform" />
+    <ColumnFilterMenu
+      v-if="colFilterMenu"
+      :session-id="tab.session.id"
+      :col-index="colFilterMenu.colIndex"
+      :col-name="colFilterMenu.colName"
+      :anchor="colFilterMenu.anchor"
+      :initial="tab.colFilters?.[colFilterMenu.colIndex]"
+      @close="colFilterMenu = null"
+      @apply="applyColFilter"
+      @sort="applyColSort"
+    />
 
     <!-- Fixed header: row-num gutter + scrollable column headers -->
     <div class="grid-header-outer">
@@ -39,6 +50,16 @@
             <template v-else>
               <span class="header-name truncate">{{ col.name }}</span>
               <span v-if="sortedColIndex === col.index" class="sort-indicator">{{ sortOrder === 'asc' ? '↑' : '↓' }}</span>
+              <button
+                class="header-filter-btn"
+                :class="{ active: !!tab.colFilters?.[col.index] }"
+                :title="tab.colFilters?.[col.index] ? 'Filter active — click to edit' : 'Sort & Filter'"
+                @click.stop="openColFilter($event, col.index, col.name)"
+                @mousedown.stop
+                @dblclick.stop
+              >
+                <Filter :size="11" :fill="tab.colFilters?.[col.index] ? 'currentColor' : 'none'" />
+              </button>
               <div class="col-resize-handle" @mousedown.stop="startColResize($event, col.index)" />
             </template>
           </div>
@@ -117,7 +138,7 @@
 
 <script setup lang="ts">
 import { ref, computed, watch, onMounted, onUnmounted, nextTick, inject } from 'vue'
-import type { Tab, Cell, Selection, FindMatch, AggregateResult } from '@/types'
+import type { Tab, Cell, Selection, FindMatch, AggregateResult, ColumnQuickFilter, SortKey, FilterCondition, FilterGroup } from '@/types'
 import { fileApi } from '@/api/file'
 import { dataApi, exportApi } from '@/api/data'
 import { useTabsStore } from '@/stores/tabs'
@@ -128,6 +149,8 @@ import FilterDialog from '@/components/dialogs/FilterDialog.vue'
 import SqlConsole from '@/components/panels/SqlConsole.vue'
 import ContextMenu from '@/components/ContextMenu.vue'
 import TransformMenu from '@/components/dialogs/TransformMenu.vue'
+import ColumnFilterMenu from '@/components/grid/ColumnFilterMenu.vue'
+import { Filter } from 'lucide-vue-next'
 
 const props = defineProps<{ tab: Tab }>()
 const tabsStore = useTabsStore()
@@ -673,12 +696,20 @@ async function onSort(keys: any[]) {
   loading.value = true
   try {
     await dataApi.sort(props.tab.session.id, keys)
-    const { rows } = await fileApi.getRows(props.tab.session.id, 0, 5000)
-    localRows.value = rows
-    tabsStore.updateTabRows(props.tab.id, rows)
+    // Force a full reload in the new order so filter indices stay valid
+    localRows.value = []
+    await ensureAllRowsLoaded()
     if (keys.length > 0) {
       sortedColIndex.value = keys[0].colIndex
       sortOrder.value = keys[0].order
+    }
+    // Re-apply any active column filters against the new order
+    if (props.tab.filterActive && Object.keys(props.tab.colFilters || {}).length > 0) {
+      const conds = buildColFilterConditions()
+      if (conds.length > 0) {
+        const result = await dataApi.filter(props.tab.session.id, { logic: 'AND', conditions: conds })
+        props.tab.filteredIndices = result.matchIndices
+      }
     }
     notify?.('success', 'Sorted')
   } catch (err: any) {
@@ -691,12 +722,135 @@ async function onSort(keys: any[]) {
 // Filter
 async function onFilter(group: any) {
   showFilter.value = false
-  loading.value = true
   try {
+    // filteredIndices reference the full dataset — make sure it's all loaded
+    await ensureAllRowsLoaded()
+    loading.value = true
     const result = await dataApi.filter(props.tab.session.id, group)
     props.tab.filterActive = true
     props.tab.filteredIndices = result.matchIndices
     notify?.('info', `${result.matchCount} rows match`)
+  } catch (err: any) {
+    notify?.('error', err.message)
+  } finally {
+    loading.value = false
+  }
+}
+
+// Ensure the full source dataset is loaded into localRows. Required before
+// filtering/sorting, because filteredIndices reference the complete dataset
+// but rows are otherwise lazy-loaded in chunks. Paginates because the backend
+// caps /rows at 5000 per request.
+async function ensureAllRowsLoaded() {
+  const total = props.tab.session.totalRows
+  if (localRows.value.length >= total) return
+  loading.value = true
+  try {
+    const all: string[][] = []
+    let offset = 0
+    const CHUNK = 5000
+    while (offset < total) {
+      const { rows } = await fileApi.getRows(props.tab.session.id, offset, CHUNK)
+      if (!rows.length) break
+      for (const r of rows) all.push(r)
+      offset += rows.length
+    }
+    localRows.value = all
+    tabsStore.updateTabRows(props.tab.id, all)
+  } finally {
+    loading.value = false
+  }
+}
+
+// ---- Per-column quick filter (Excel-style header dropdown) ----
+const colFilterMenu = ref<{
+  colIndex: number
+  colName: string
+  anchor: { x: number; y: number; width: number }
+} | null>(null)
+
+function openColFilter(e: MouseEvent, colIndex: number, colName: string) {
+  const btn = e.currentTarget as HTMLElement
+  const rect = btn.getBoundingClientRect()
+  colFilterMenu.value = {
+    colIndex,
+    colName,
+    anchor: { x: rect.right - 380, y: rect.bottom + 6, width: rect.width }
+  }
+}
+
+function buildColFilterConditions(): FilterCondition[] {
+  const conds: FilterCondition[] = []
+  const filters = props.tab.colFilters || {}
+  for (const key of Object.keys(filters)) {
+    const ci = Number(key)
+    const f = filters[ci]
+    if (!f) continue
+    if (f.mode === 'values' && f.selectedValues && f.selectedValues.length > 0) {
+      conds.push({ colIndex: ci, operator: 'in', value: '', values: f.selectedValues })
+    } else if (f.mode === 'condition' && f.operator) {
+      conds.push({ colIndex: ci, operator: f.operator, value: f.value ?? '' })
+    }
+  }
+  return conds
+}
+
+async function applyColFilter(filter: ColumnQuickFilter | null) {
+  if (!props.tab.colFilters) props.tab.colFilters = {}
+  const colIndex = colFilterMenu.value?.colIndex
+  if (colIndex === undefined) return
+
+  if (filter === null) {
+    delete props.tab.colFilters[colIndex]
+  } else {
+    props.tab.colFilters[colIndex] = filter
+  }
+
+  const conditions = buildColFilterConditions()
+  if (conditions.length === 0) {
+    // clear all
+    props.tab.filterActive = false
+    props.tab.filteredIndices = null
+    notify?.('info', 'Filter cleared')
+    return
+  }
+
+  try {
+    // filteredIndices reference the full dataset — make sure it's all loaded
+    await ensureAllRowsLoaded()
+    loading.value = true
+    const group: FilterGroup = { logic: 'AND', conditions }
+    const result = await dataApi.filter(props.tab.session.id, group)
+    props.tab.filterActive = true
+    props.tab.filteredIndices = result.matchIndices
+    notify?.('info', `${result.matchCount} rows match`)
+  } catch (err: any) {
+    notify?.('error', err.message)
+  } finally {
+    loading.value = false
+  }
+}
+
+async function applyColSort(key: SortKey) {
+  loading.value = true
+  try {
+    await dataApi.sort(props.tab.session.id, [key])
+    // Reload the full dataset so the new order shows up immediately and so
+    // any active filter's indices map correctly. Force a full reload.
+    localRows.value = []
+    await ensureAllRowsLoaded()
+    sortedColIndex.value = key.colIndex
+    sortOrder.value = key.order
+    // Re-apply column filters so filteredIndices line up with new order
+    if (Object.keys(props.tab.colFilters || {}).length > 0) {
+      const conds = buildColFilterConditions()
+      if (conds.length > 0) {
+        const result = await dataApi.filter(props.tab.session.id, { logic: 'AND', conditions: conds })
+        props.tab.filterActive = true
+        props.tab.filteredIndices = result.matchIndices
+      }
+    }
+    notify?.('success', `Sorted by ${key.order}`)
   } catch (err: any) {
     notify?.('error', err.message)
   } finally {
@@ -1030,6 +1184,10 @@ watch(() => props.tab.rows, (newRows) => {
 // Lazy load more rows when scrolling (append-only, uses offset to avoid re-downloading)
 let lazyLoading = false
 watch(scrollTop, async (val) => {
+  // When a filter is active the full dataset is already loaded; the scroll
+  // position is in filtered-display space, so the append heuristic below
+  // would be meaningless. Skip it.
+  if (props.tab.filterActive) return
   const visibleEnd = Math.ceil((val + viewportH.value) / rowH) + BUFFER
   if (lazyLoading) return
   if (visibleEnd >= localRows.value.length - 50 && localRows.value.length < props.tab.session.totalRows) {
@@ -1109,6 +1267,31 @@ watch(scrollTop, async (val) => {
   background: transparent;
 }
 .col-resize-handle:hover { background: var(--accent); }
+
+.header-filter-btn {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 18px;
+  height: 18px;
+  margin-right: 6px;
+  padding: 0;
+  border: none;
+  background: transparent;
+  color: var(--text-muted);
+  border-radius: 3px;
+  cursor: pointer;
+  opacity: 0;
+  transition: opacity 0.12s, background 0.12s, color 0.12s;
+  flex-shrink: 0;
+}
+.grid-header-cell:hover .header-filter-btn { opacity: 0.7; }
+.header-filter-btn:hover { background: var(--bg-hover); color: var(--accent); opacity: 1 !important; }
+.header-filter-btn.active {
+  opacity: 1;
+  color: var(--accent);
+  background: color-mix(in srgb, var(--accent) 15%, transparent);
+}
 
 .header-editor {
   position: absolute;

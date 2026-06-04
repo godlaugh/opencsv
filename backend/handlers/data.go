@@ -653,8 +653,91 @@ func matchesCondition(row []string, cond models.FilterCondition) bool {
 			return false
 		}
 		return re.MatchString(val)
+	case "in":
+		// Match if cell value (case-sensitive, trimmed) is in Values list.
+		// Also supports a sentinel "" entry to match empty cells.
+		for _, v := range cond.Values {
+			if v == val {
+				return true
+			}
+		}
+		return false
+	case "notIn":
+		for _, v := range cond.Values {
+			if v == val {
+				return false
+			}
+		}
+		return true
 	}
 	return false
+}
+
+// GetColumnValues handles GET /api/files/:id/columns/:colIndex/values
+// Returns distinct values for a column with counts, optional search filter,
+// sorted alphabetically. Used by the per-column filter dropdown.
+func GetColumnValues(c *gin.Context) {
+	id := c.Param("id")
+	colStr := c.Param("colIndex")
+	colIdx, err := strconv.Atoi(colStr)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid colIndex"})
+		return
+	}
+
+	q := strings.ToLower(c.Query("q"))
+	limit, _ := strconv.Atoi(c.DefaultQuery("limit", "500"))
+	if limit <= 0 || limit > 50000 {
+		limit = 500
+	}
+
+	sess, err := session.Global.Get(id)
+	if err != nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": err.Error()})
+		return
+	}
+
+	counts := make(map[string]int)
+	for _, row := range sess.Rows {
+		v := ""
+		if colIdx < len(row) {
+			v = row[colIdx]
+		}
+		if q != "" && !strings.Contains(strings.ToLower(v), q) {
+			continue
+		}
+		counts[v]++
+	}
+
+	keys := make([]string, 0, len(counts))
+	for k := range counts {
+		keys = append(keys, k)
+	}
+	sort.SliceStable(keys, func(i, j int) bool {
+		// empties last, then case-insensitive alpha
+		if keys[i] == "" && keys[j] != "" {
+			return false
+		}
+		if keys[j] == "" && keys[i] != "" {
+			return true
+		}
+		return strings.ToLower(keys[i]) < strings.ToLower(keys[j])
+	})
+
+	total := len(keys)
+	if len(keys) > limit {
+		keys = keys[:limit]
+	}
+
+	type valueEntry struct {
+		Value string `json:"value"`
+		Count int    `json:"count"`
+	}
+	out := make([]valueEntry, len(keys))
+	for i, k := range keys {
+		out[i] = valueEntry{Value: k, Count: counts[k]}
+	}
+	c.JSON(http.StatusOK, gin.H{"values": out, "total": total, "truncated": total > limit})
 }
 
 func buildKey(row []string, colIndexes []int) string {

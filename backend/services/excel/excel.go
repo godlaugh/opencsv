@@ -45,6 +45,27 @@ func Import(filePath string, hasHeader bool) (headers []string, rows [][]string,
 
 // Export writes headers + rows to an xlsx file
 func Export(filePath string, headers []string, rows [][]string) error {
+	f, err := build(headers, rows)
+	if err != nil {
+		return err
+	}
+	return f.SaveAs(filePath)
+}
+
+// ExportBytes serializes headers + rows as an xlsx document in memory
+func ExportBytes(headers []string, rows [][]string) ([]byte, error) {
+	f, err := build(headers, rows)
+	if err != nil {
+		return nil, err
+	}
+	buf, err := f.WriteToBuffer()
+	if err != nil {
+		return nil, err
+	}
+	return buf.Bytes(), nil
+}
+
+func build(headers []string, rows [][]string) (*excelize.File, error) {
 	f := excelize.NewFile()
 	sheet := "Sheet1"
 
@@ -52,7 +73,7 @@ func Export(filePath string, headers []string, rows [][]string) error {
 	for i, h := range headers {
 		cell, _ := excelize.CoordinatesToCellName(i+1, 1)
 		if err := f.SetCellValue(sheet, cell, h); err != nil {
-			return err
+			return nil, err
 		}
 	}
 
@@ -61,7 +82,7 @@ func Export(filePath string, headers []string, rows [][]string) error {
 		for ci, val := range row {
 			cell, _ := excelize.CoordinatesToCellName(ci+1, ri+2)
 			if err := f.SetCellValue(sheet, cell, val); err != nil {
-				return err
+				return nil, err
 			}
 		}
 	}
@@ -76,5 +97,5 @@ func Export(filePath string, headers []string, rows [][]string) error {
 		_ = f.SetCellStyle(sheet, "A1", endCell, style)
 	}
 
-	return f.SaveAs(filePath)
+	return f, nil
 }

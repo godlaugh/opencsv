@@ -35,6 +35,8 @@ export interface Tab {
   loading: boolean
   filterActive: boolean
   filteredIndices: number[] | null
+  /** Per-column quick filters keyed by column index */
+  colFilters?: Record<number, ColumnQuickFilter>
 }
 
 export interface SortKey {
@@ -47,6 +49,18 @@ export interface FilterCondition {
   colIndex: number
   operator: string
   value: string
+  values?: string[]
+}
+
+// Per-column quick-filter state (Excel-style header dropdown)
+export interface ColumnQuickFilter {
+  mode: 'values' | 'condition'
+  // 'values' mode: only rows where the column value is in this set are kept.
+  // When undefined or covers all distinct values, the filter is inactive.
+  selectedValues?: string[]
+  // 'condition' mode
+  operator?: string
+  value?: string
 }
 
 export interface FilterGroup {

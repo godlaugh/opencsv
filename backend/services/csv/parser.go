@@ -76,11 +76,16 @@ func WriteFile(filePath string, headers []string, rows [][]string, delimiter, en
 	}
 	defer f.Close()
 
-	var writer io.Writer = f
+	return WriteCSV(f, headers, rows, delimiter, encoding)
+}
+
+// WriteCSV serializes headers + rows as CSV into the given writer
+func WriteCSV(writer io.Writer, headers []string, rows [][]string, delimiter, encoding string) error {
 	// Apply encoding if needed
 	if strings.ToLower(encoding) == "utf-8-bom" {
-		// Write BOM
-		_, _ = f.Write([]byte{0xEF, 0xBB, 0xBF})
+		if _, err := writer.Write([]byte{0xEF, 0xBB, 0xBF}); err != nil {
+			return err
+		}
 	}
 
 	w := csv.NewWriter(writer)

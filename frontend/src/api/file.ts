@@ -47,6 +47,10 @@ export const fileApi = {
     return client.post(`/files/${id}/save`, { filePath: filePath || '' }).then(r => r.data)
   },
 
+  getContent(id: string): Promise<Blob> {
+    return client.get(`/files/${id}/content`, { responseType: 'blob' }).then(r => r.data)
+  },
+
   close(id: string) {
     return client.delete(`/files/${id}`).then(r => r.data)
   },

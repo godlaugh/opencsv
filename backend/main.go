@@ -46,6 +46,7 @@ func main() {
 			{
 				file.GET("", handlers.GetFileInfo)
 				file.GET("/rows", handlers.GetRows)
+				file.GET("/content", handlers.GetContent)
 				file.PUT("/cells", handlers.UpdateCells)
 				file.PUT("/columns", handlers.UpdateColumns)
 				file.POST("/save", handlers.SaveFile)
@@ -60,6 +61,7 @@ func main() {
 				file.DELETE("/rows", handlers.DeleteRows)
 				file.POST("/columns/insert", handlers.InsertCols)
 				file.DELETE("/columns", handlers.DeleteCols)
+				file.GET("/columns/:colIndex/values", handlers.GetColumnValues)
 				file.POST("/transform", handlers.TransformData)
 				file.POST("/deduplicate", handlers.Deduplicate)
 				file.POST("/aggregate", handlers.Aggregate)

@@ -2,6 +2,7 @@ import { defineStore } from 'pinia'
 import { ref, computed } from 'vue'
 import type { Tab, FileSession } from '@/types'
 import { fileApi } from '@/api/file'
+import { clearHandle } from '@/utils/fileSystem'
 
 export const useTabsStore = defineStore('tabs', () => {
   const tabs = ref<Tab[]>([])
@@ -17,7 +18,8 @@ export const useTabsStore = defineStore('tabs', () => {
       cachedPages: new Map(),
       loading: false,
       filterActive: false,
-      filteredIndices: null
+      filteredIndices: null,
+      colFilters: {}
     }
     tabs.value.push(tab)
     activeTabId.value = tab.id
@@ -28,6 +30,7 @@ export const useTabsStore = defineStore('tabs', () => {
     const idx = tabs.value.findIndex(t => t.id === id)
     if (idx === -1) return
     fileApi.close(id).catch(() => {})
+    clearHandle(id)
     tabs.value.splice(idx, 1)
     if (activeTabId.value === id) {
       activeTabId.value = tabs.value[Math.max(0, idx - 1)]?.id ?? null
