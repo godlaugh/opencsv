@@ -41,6 +41,12 @@ export interface Tab {
    * so they stay in sync (SmoothCSV-style).
    */
   filterGroup?: FilterGroup | null
+  /**
+   * Single source of truth for sorting. Both the per-column sort buttons and
+   * the global Sort dialog read from and write to this list, so they stay in
+   * sync. Order in the array is the sort priority (primary key first).
+   */
+  sortKeys?: SortKey[]
 }
 
 export interface SortKey {

@@ -2,7 +2,7 @@
   <div class="grid-wrap" @keydown="onKeydown" tabindex="0" ref="wrapRef">
     <!-- Overlays / Panels -->
     <FindReplaceBar v-if="showFindReplace" :tab="tab" @close="showFindReplace = false" @matches="onFindMatches" />
-    <SortDialog v-if="showSort" :columns="tab.session.columns" @close="showSort = false" @sort="onSort" />
+    <SortDialog v-if="showSort" :columns="tab.session.columns" :initial="tab.sortKeys" @close="showSort = false" @sort="onSort" />
     <FilterDialog v-if="showFilter" :columns="tab.session.columns" :initial="tab.filterGroup" @close="showFilter = false" @filter="onFilter" />
     <SqlConsole v-if="showSql" :tab="tab" @close="showSql = false" />
     <ContextMenu v-if="ctxMenu" :items="ctxItems" :x="ctxMenu.x" :y="ctxMenu.y" @close="ctxMenu = null" @select="onCtxSelect" />
@@ -14,6 +14,7 @@
       :col-name="colFilterMenu.colName"
       :anchor="colFilterMenu.anchor"
       :initial="columnInitialFilter(colFilterMenu.colIndex)"
+      :active-sort="columnSortKey(colFilterMenu.colIndex)"
       @close="colFilterMenu = null"
       @apply="applyColFilter"
       @sort="applyColSort"
@@ -41,7 +42,7 @@
             v-for="(col, ci) in visibleCols"
             :key="col.index"
             class="grid-header-cell"
-            :class="{ selected: isColSelected(col.index), sorted: sortedColIndex === col.index, editing: editingHeader === col.index }"
+            :class="{ selected: isColSelected(col.index), sorted: !!columnSort(col.index), editing: editingHeader === col.index }"
             :style="{ width: getColWidth(col.index) + 'px' }"
             @click="editingHeader === col.index ? null : selectCol(col.index, $event)"
             @dblclick="startHeaderEdit(ci, col)"
@@ -62,7 +63,9 @@
             </template>
             <template v-else>
               <span class="header-name truncate">{{ col.name }}</span>
-              <span v-if="sortedColIndex === col.index" class="sort-indicator">{{ sortOrder === 'asc' ? '↑' : '↓' }}</span>
+              <span v-if="columnSort(col.index)" class="sort-indicator">
+                {{ columnSort(col.index)!.order === 'asc' ? '↑' : '↓' }}<sub v-if="(tab.sortKeys?.length ?? 0) > 1">{{ columnSort(col.index)!.priority + 1 }}</sub>
+              </span>
               <button
                 class="header-filter-btn"
                 :class="{ active: columnHasFilter(col.index) }"
@@ -289,9 +292,19 @@ function onFindMatches(matches: FindMatch[]) {
   if (matches.length > 0) scrollToCell(matches[0].row, matches[0].col)
 }
 
-// Sort indicator
-const sortedColIndex = ref<number | null>(null)
-const sortOrder = ref<'asc' | 'desc'>('asc')
+// Sort indicator — derived from the shared tab.sortKeys
+function columnSort(colIndex: number): { order: 'asc' | 'desc'; priority: number } | null {
+  const keys = props.tab.sortKeys ?? []
+  const idx = keys.findIndex(k => k.colIndex === colIndex)
+  if (idx === -1) return null
+  return { order: keys[idx].order, priority: idx }
+}
+
+// The full SortKey for a column (for the per-column menu to reflect direction + type)
+function columnSortKey(colIndex: number): { order: 'asc' | 'desc'; type: 'text' | 'number' | 'date' | 'length' } | null {
+  const k = (props.tab.sortKeys ?? []).find(k => k.colIndex === colIndex)
+  return k ? { order: k.order, type: k.type } : null
+}
 
 // Editing state
 const editingCell = ref<{ row: number; col: number } | null>(null)
@@ -703,30 +716,35 @@ onUnmounted(() => {
   window.removeEventListener('cmd:downloadFormat', _cmdDownloadFormat)
 })
 
-// Sort
-async function onSort(keys: any[]) {
-  showSort.value = false
+// Sort — shared runner used by both the global dialog and per-column buttons.
+// tab.sortKeys is the single source of truth.
+async function runSort(keys: SortKey[]) {
   loading.value = true
   try {
-    await dataApi.sort(props.tab.session.id, keys)
+    props.tab.sortKeys = keys
+    if (keys.length > 0) {
+      await dataApi.sort(props.tab.session.id, keys)
+    }
     // Force a full reload in the new order so filter indices stay valid
     localRows.value = []
     await ensureAllRowsLoaded()
-    if (keys.length > 0) {
-      sortedColIndex.value = keys[0].colIndex
-      sortOrder.value = keys[0].order
-    }
     // Re-apply the active filter against the new order
     if (props.tab.filterActive && props.tab.filterGroup && props.tab.filterGroup.conditions.length > 0) {
       const result = await dataApi.filter(props.tab.session.id, props.tab.filterGroup)
       props.tab.filteredIndices = result.matchIndices
     }
-    notify?.('success', 'Sorted')
+    notify?.('success', keys.length > 1 ? `Sorted by ${keys.length} columns` : 'Sorted')
   } catch (err: any) {
     notify?.('error', err.message)
   } finally {
     loading.value = false
   }
+}
+
+// Global Sort dialog → replace the shared sort keys.
+async function onSort(keys: SortKey[]) {
+  showSort.value = false
+  await runSort(keys)
 }
 
 // Global filter dialog → set the shared filter group, then run.
@@ -886,28 +904,9 @@ async function applyColFilter(filter: ColumnQuickFilter | null) {
   await applyFilterGroup()
 }
 
+// Per-column sort button → replace the shared sort with this single key.
 async function applyColSort(key: SortKey) {
-  loading.value = true
-  try {
-    await dataApi.sort(props.tab.session.id, [key])
-    // Reload the full dataset so the new order shows up immediately and so
-    // any active filter's indices map correctly. Force a full reload.
-    localRows.value = []
-    await ensureAllRowsLoaded()
-    sortedColIndex.value = key.colIndex
-    sortOrder.value = key.order
-    // Re-apply the active filter so filteredIndices line up with the new order
-    if (props.tab.filterGroup && props.tab.filterGroup.conditions.length > 0) {
-      const result = await dataApi.filter(props.tab.session.id, props.tab.filterGroup)
-      props.tab.filterActive = true
-      props.tab.filteredIndices = result.matchIndices
-    }
-    notify?.('success', `Sorted by ${key.order}`)
-  } catch (err: any) {
-    notify?.('error', err.message)
-  } finally {
-    loading.value = false
-  }
+  await runSort([key])
 }
 
 // Transform

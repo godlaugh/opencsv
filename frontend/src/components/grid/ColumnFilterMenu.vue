@@ -11,16 +11,16 @@
         <div class="cfm-section">
           <div class="cfm-label">SORT</div>
           <div class="cfm-sort-row">
-            <button class="cfm-chip" @click="sort('asc')">
+            <button class="cfm-chip" :class="{ active: activeSort?.order === 'asc' }" @click="sort('asc')">
               <BarChart3 :size="13" />
               <span>Sort Ascending</span>
             </button>
-            <button class="cfm-chip" @click="sort('desc')">
+            <button class="cfm-chip" :class="{ active: activeSort?.order === 'desc' }" @click="sort('desc')">
               <BarChartHorizontal :size="13" />
               <span>Sort Descending</span>
             </button>
           </div>
-          <details class="cfm-more">
+          <details class="cfm-more" :open="!!activeSort && activeSort.type !== 'text'">
             <summary>More options</summary>
             <div class="cfm-more-row">
               <label class="cfm-sub-label">Type</label>
@@ -132,6 +132,7 @@ const props = defineProps<{
   colName: string
   anchor: { x: number; y: number; width: number }
   initial?: ColumnQuickFilter
+  activeSort?: { order: 'asc' | 'desc'; type: 'text' | 'number' | 'date' | 'length' } | null
 }>()
 
 const emit = defineEmits<{
@@ -153,7 +154,7 @@ const initialHadNoSelection = !props.initial?.selectedValues
 const condOp = ref(props.initial?.operator ?? 'contains')
 const condValue = ref(props.initial?.value ?? '')
 
-const sortType = ref<'text' | 'number' | 'date' | 'length'>('text')
+const sortType = ref<'text' | 'number' | 'date' | 'length'>(props.activeSort?.type ?? 'text')
 
 const operators = [
   { value: 'contains', label: 'contains' },
@@ -320,6 +321,12 @@ onUnmounted(() => window.removeEventListener('keydown', onKey))
   transition: background 0.1s;
 }
 .cfm-chip:hover { background: var(--bg-hover); }
+.cfm-chip.active {
+  background: color-mix(in srgb, var(--accent) 15%, transparent);
+  border-color: var(--accent);
+  color: var(--accent);
+  font-weight: 600;
+}
 
 .cfm-more { margin-top: 8px; font-size: 11px; color: var(--text-secondary); }
 .cfm-more summary { cursor: pointer; user-select: none; }

@@ -42,12 +42,16 @@ import { ref } from 'vue'
 import { X, Trash2, Plus } from 'lucide-vue-next'
 import type { Column, SortKey } from '@/types'
 
-const props = defineProps<{ columns: Column[] }>()
+const props = defineProps<{ columns: Column[]; initial?: SortKey[] | null }>()
 const emit = defineEmits<{ close: []; sort: [keys: SortKey[]] }>()
 
-const keys = ref<SortKey[]>([
-  { colIndex: props.columns[0]?.index ?? 0, order: 'asc', type: 'text' }
-])
+// Initialize from the existing sort so the global dialog reflects whatever
+// the per-column sort buttons produced (and vice-versa).
+const keys = ref<SortKey[]>(
+  props.initial && props.initial.length > 0
+    ? props.initial.map(k => ({ ...k }))
+    : [{ colIndex: props.columns[0]?.index ?? 0, order: 'asc', type: 'text' }]
+)
 
 function addKey() {
   keys.value.push({ colIndex: props.columns[0]?.index ?? 0, order: 'asc', type: 'text' })

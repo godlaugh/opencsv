@@ -19,7 +19,8 @@ export const useTabsStore = defineStore('tabs', () => {
       loading: false,
       filterActive: false,
       filteredIndices: null,
-      filterGroup: null
+      filterGroup: null,
+      sortKeys: []
     }
     tabs.value.push(tab)
     activeTabId.value = tab.id
