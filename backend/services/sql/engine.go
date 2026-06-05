@@ -5,77 +5,37 @@ import (
 	"fmt"
 	"opencsv/models"
 	"strings"
+	"sync"
 
 	_ "modernc.org/sqlite"
 )
 
-// Execute loads session data into an in-memory SQLite DB and runs the query
+// cachedDB holds a built in-memory SQLite table for a session, tagged with the
+// session's DataVersion so we can detect when the underlying data changed.
+type cachedDB struct {
+	db      *sql.DB
+	version uint64
+}
+
+var (
+	cacheMu    sync.Mutex
+	cache      = map[string]*cachedDB{}
+	buildLocks sync.Map // sessionID -> *sync.Mutex (avoid concurrent rebuilds)
+)
+
+func sessionLock(id string) *sync.Mutex {
+	m, _ := buildLocks.LoadOrStore(id, &sync.Mutex{})
+	return m.(*sync.Mutex)
+}
+
+// Execute runs the query against the session's SQLite table, building (and
+// caching) that table on first use and reusing it until the data changes.
 func Execute(sess *models.FileSession, query string) (columns []string, rows [][]string, err error) {
-	db, err := sql.Open("sqlite", ":memory:")
+	db, err := getOrBuild(sess)
 	if err != nil {
-		return nil, nil, fmt.Errorf("cannot open sqlite: %w", err)
-	}
-	defer db.Close()
-
-	// Create table
-	tableName := "data"
-	colDefs := make([]string, len(sess.Columns))
-	for i, c := range sess.Columns {
-		// Sanitize column name
-		name := sanitizeColName(c.Name, i)
-		colDefs[i] = fmt.Sprintf(`"%s" TEXT`, name)
-	}
-	createSQL := fmt.Sprintf(`CREATE TABLE "%s" (%s)`, tableName, strings.Join(colDefs, ", "))
-
-	if _, err = db.Exec(createSQL); err != nil {
-		return nil, nil, fmt.Errorf("create table error: %w", err)
+		return nil, nil, err
 	}
 
-	// Insert data in batches
-	if len(sess.Rows) > 0 {
-		colCount := len(sess.Columns)
-		placeholders := make([]string, colCount)
-		for i := range placeholders {
-			placeholders[i] = "?"
-		}
-
-		colNames := make([]string, colCount)
-		for i, c := range sess.Columns {
-			colNames[i] = fmt.Sprintf(`"%s"`, sanitizeColName(c.Name, i))
-		}
-
-		insertSQL := fmt.Sprintf(`INSERT INTO "%s" (%s) VALUES (%s)`,
-			tableName,
-			strings.Join(colNames, ", "),
-			strings.Join(placeholders, ", "),
-		)
-
-		tx, _ := db.Begin()
-		stmt, err := tx.Prepare(insertSQL)
-		if err != nil {
-			_ = tx.Rollback()
-			return nil, nil, fmt.Errorf("prepare insert error: %w", err)
-		}
-
-		for _, row := range sess.Rows {
-			vals := make([]interface{}, colCount)
-			for i := range vals {
-				if i < len(row) {
-					vals[i] = row[i]
-				} else {
-					vals[i] = ""
-				}
-			}
-			if _, err = stmt.Exec(vals...); err != nil {
-				_ = tx.Rollback()
-				return nil, nil, fmt.Errorf("insert error: %w", err)
-			}
-		}
-		stmt.Close()
-		_ = tx.Commit()
-	}
-
-	// Execute user query
 	sqlRows, err := db.Query(query)
 	if err != nil {
 		return nil, nil, fmt.Errorf("query error: %w", err)
@@ -108,6 +68,112 @@ func Execute(sess *models.FileSession, query string) (columns []string, rows [][
 	}
 
 	return columns, rows, sqlRows.Err()
+}
+
+// getOrBuild returns a cached SQLite DB for the session, rebuilding it only if
+// the session's data changed (DataVersion bumped) since it was last built.
+func getOrBuild(sess *models.FileSession) (*sql.DB, error) {
+	lock := sessionLock(sess.ID)
+	lock.Lock()
+	defer lock.Unlock()
+
+	cacheMu.Lock()
+	cd := cache[sess.ID]
+	cacheMu.Unlock()
+
+	if cd != nil && cd.version == sess.DataVersion {
+		return cd.db, nil // fresh — reuse
+	}
+	if cd != nil {
+		cd.db.Close() // stale — drop and rebuild
+	}
+
+	db, err := build(sess)
+	if err != nil {
+		return nil, err
+	}
+	cacheMu.Lock()
+	cache[sess.ID] = &cachedDB{db: db, version: sess.DataVersion}
+	cacheMu.Unlock()
+	return db, nil
+}
+
+// build loads the session data into a fresh in-memory SQLite table.
+func build(sess *models.FileSession) (*sql.DB, error) {
+	db, err := sql.Open("sqlite", ":memory:")
+	if err != nil {
+		return nil, fmt.Errorf("cannot open sqlite: %w", err)
+	}
+	// A ":memory:" database is scoped to a single connection. Pin the pool to
+	// one connection so the table persists across cached queries.
+	db.SetMaxOpenConns(1)
+	// Speed up the bulk load (safe for a throwaway in-memory table).
+	_, _ = db.Exec("PRAGMA journal_mode=OFF")
+	_, _ = db.Exec("PRAGMA synchronous=OFF")
+	_, _ = db.Exec("PRAGMA temp_store=MEMORY")
+
+	tableName := "data"
+	colCount := len(sess.Columns)
+	colDefs := make([]string, colCount)
+	colNames := make([]string, colCount)
+	for i, c := range sess.Columns {
+		name := sanitizeColName(c.Name, i)
+		colDefs[i] = fmt.Sprintf(`"%s" TEXT`, name)
+		colNames[i] = fmt.Sprintf(`"%s"`, name)
+	}
+	createSQL := fmt.Sprintf(`CREATE TABLE "%s" (%s)`, tableName, strings.Join(colDefs, ", "))
+	if _, err = db.Exec(createSQL); err != nil {
+		db.Close()
+		return nil, fmt.Errorf("create table error: %w", err)
+	}
+
+	if len(sess.Rows) > 0 && colCount > 0 {
+		// One prepared statement reused for every row: modernc compiles the SQL
+		// once, which is faster than re-parsing a big multi-row INSERT per batch.
+		placeholders := strings.TrimSuffix(strings.Repeat("?,", colCount), ",")
+		insertSQL := fmt.Sprintf(`INSERT INTO "%s" (%s) VALUES (%s)`,
+			tableName, strings.Join(colNames, ", "), placeholders)
+
+		tx, _ := db.Begin()
+		stmt, err := tx.Prepare(insertSQL)
+		if err != nil {
+			_ = tx.Rollback()
+			db.Close()
+			return nil, fmt.Errorf("prepare insert error: %w", err)
+		}
+		vals := make([]interface{}, colCount)
+		for _, row := range sess.Rows {
+			for i := range vals {
+				if i < len(row) {
+					vals[i] = row[i]
+				} else {
+					vals[i] = ""
+				}
+			}
+			if _, err = stmt.Exec(vals...); err != nil {
+				stmt.Close()
+				_ = tx.Rollback()
+				db.Close()
+				return nil, fmt.Errorf("insert error: %w", err)
+			}
+		}
+		stmt.Close()
+		_ = tx.Commit()
+	}
+
+	return db, nil
+}
+
+// Invalidate drops and closes any cached table for a session (call on close).
+func Invalidate(id string) {
+	cacheMu.Lock()
+	cd := cache[id]
+	delete(cache, id)
+	cacheMu.Unlock()
+	if cd != nil {
+		cd.db.Close()
+	}
+	buildLocks.Delete(id)
 }
 
 func sanitizeColName(name string, index int) string {

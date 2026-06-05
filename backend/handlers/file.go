@@ -224,6 +224,7 @@ func UpdateColumns(c *gin.Context) {
 
 	sess.Columns = req.Columns
 	sess.Modified = true
+	sess.DataVersion++
 	c.JSON(http.StatusOK, gin.H{"ok": true})
 }
 

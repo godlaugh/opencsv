@@ -9,6 +9,7 @@ import (
 
 	"opencsv/models"
 	csvparser "opencsv/services/csv"
+	sqlengine "opencsv/services/sql"
 )
 
 // Store manages all open file sessions
@@ -95,6 +96,7 @@ func (s *Store) Close(id string) {
 	s.mu.Lock()
 	delete(s.sessions, id)
 	s.mu.Unlock()
+	sqlengine.Invalidate(id) // drop the cached SQLite table
 }
 
 // Save writes the session data back to disk
@@ -180,6 +182,7 @@ func (s *Store) UpdateCells(id string, cells []models.Cell) error {
 		sess.Rows[cell.Row] = row
 	}
 	sess.Modified = true
+	sess.DataVersion++
 	return nil
 }
 

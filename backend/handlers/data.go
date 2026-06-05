@@ -127,6 +127,7 @@ func SortData(c *gin.Context) {
 	sess.Rows = newRows
 
 	sess.Modified = true
+	sess.DataVersion++
 	c.JSON(http.StatusOK, gin.H{"ok": true, "totalRows": sess.TotalRows})
 }
 
@@ -163,9 +164,9 @@ func FilterData(c *gin.Context) {
 	}
 
 	c.JSON(http.StatusOK, gin.H{
-		"matchCount":  len(matchIndices),
+		"matchCount":   len(matchIndices),
 		"matchIndices": matchIndices,
-		"rows":        previewRows,
+		"rows":         previewRows,
 	})
 }
 
@@ -291,6 +292,7 @@ func ReplaceInData(c *gin.Context) {
 				if !req.All {
 					sess.Rows[ri] = row
 					sess.Modified = true
+					sess.DataVersion++
 					c.JSON(http.StatusOK, gin.H{"count": 1})
 					return
 				}
@@ -301,6 +303,7 @@ func ReplaceInData(c *gin.Context) {
 
 	if count > 0 {
 		sess.Modified = true
+		sess.DataVersion++
 	}
 
 	c.JSON(http.StatusOK, gin.H{"count": count})
@@ -341,6 +344,7 @@ func InsertRows(c *gin.Context) {
 	sess.Rows = append(sess.Rows[:insertAt], append(newRows, sess.Rows[insertAt:]...)...)
 	sess.TotalRows = len(sess.Rows)
 	sess.Modified = true
+	sess.DataVersion++
 
 	c.JSON(http.StatusOK, gin.H{"ok": true, "totalRows": sess.TotalRows})
 }
@@ -375,6 +379,7 @@ func DeleteRows(c *gin.Context) {
 	sess.Rows = newRows
 	sess.TotalRows = len(sess.Rows)
 	sess.Modified = true
+	sess.DataVersion++
 
 	c.JSON(http.StatusOK, gin.H{"ok": true, "totalRows": sess.TotalRows})
 }
@@ -422,6 +427,7 @@ func InsertCols(c *gin.Context) {
 	}
 
 	sess.Modified = true
+	sess.DataVersion++
 	c.JSON(http.StatusOK, gin.H{"ok": true, "columns": sess.Columns})
 }
 
@@ -467,6 +473,7 @@ func DeleteCols(c *gin.Context) {
 	}
 
 	sess.Modified = true
+	sess.DataVersion++
 	c.JSON(http.StatusOK, gin.H{"ok": true, "columns": sess.Columns})
 }
 
@@ -495,6 +502,7 @@ func TransformData(c *gin.Context) {
 	}
 
 	sess.Modified = true
+	sess.DataVersion++
 	c.JSON(http.StatusOK, gin.H{"ok": true})
 }
 
@@ -530,6 +538,7 @@ func Deduplicate(c *gin.Context) {
 	sess.Rows = newRows
 	sess.TotalRows = len(sess.Rows)
 	sess.Modified = true
+	sess.DataVersion++
 
 	c.JSON(http.StatusOK, gin.H{"ok": true, "removed": removed, "totalRows": sess.TotalRows})
 }
@@ -614,6 +623,7 @@ func Transpose(c *gin.Context) {
 	sess.Rows = transposed[1:]
 	sess.TotalRows = len(sess.Rows)
 	sess.Modified = true
+	sess.DataVersion++
 
 	c.JSON(http.StatusOK, gin.H{"ok": true, "columns": sess.Columns, "totalRows": sess.TotalRows})
 }

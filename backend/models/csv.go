@@ -17,20 +17,23 @@ type Column struct {
 
 // Cell represents a single cell value update
 type Cell struct {
-	Row    int    `json:"row"`
-	Col    int    `json:"col"`
-	Value  string `json:"value"`
+	Row   int    `json:"row"`
+	Col   int    `json:"col"`
+	Value string `json:"value"`
 }
 
 // FileSession is the in-memory state of an opened file
 type FileSession struct {
-	ID       string    `json:"id"`
-	FilePath string    `json:"filePath"`
-	Config   CsvConfig `json:"config"`
-	Columns  []Column  `json:"columns"`
-	Rows     [][]string `json:"-"` // full data in memory
-	TotalRows int       `json:"totalRows"`
-	Modified  bool      `json:"modified"`
+	ID        string     `json:"id"`
+	FilePath  string     `json:"filePath"`
+	Config    CsvConfig  `json:"config"`
+	Columns   []Column   `json:"columns"`
+	Rows      [][]string `json:"-"` // full data in memory
+	TotalRows int        `json:"totalRows"`
+	Modified  bool       `json:"modified"`
+	// DataVersion is bumped on every mutation (cells/rows/columns). The SQL
+	// engine uses it to know when its cached SQLite table is stale.
+	DataVersion uint64 `json:"-"`
 }
 
 // SortKey defines one sort key
@@ -56,11 +59,11 @@ type FilterGroup struct {
 
 // AggregateResult holds statistics for a selection
 type AggregateResult struct {
-	Count   int     `json:"count"`
-	Sum     float64 `json:"sum"`
-	Avg     float64 `json:"avg"`
-	Min     string  `json:"min"`
-	Max     string  `json:"max"`
-	Empty   int     `json:"empty"`
-	Unique  int     `json:"unique"`
+	Count  int     `json:"count"`
+	Sum    float64 `json:"sum"`
+	Avg    float64 `json:"avg"`
+	Min    string  `json:"min"`
+	Max    string  `json:"max"`
+	Empty  int     `json:"empty"`
+	Unique int     `json:"unique"`
 }
