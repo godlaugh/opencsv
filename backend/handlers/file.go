@@ -76,6 +76,37 @@ func GetRows(c *gin.Context) {
 	})
 }
 
+// GetRowsByIndices handles POST /api/files/:id/rows/by-indices
+// Returns rows for an explicit list of (full-dataset) row indices, in the same
+// order as requested. Used by the windowed grid to fetch a filtered/scattered
+// view window without loading the whole dataset into the browser.
+func GetRowsByIndices(c *gin.Context) {
+	id := c.Param("id")
+	var req struct {
+		Indices []int `json:"indices"`
+	}
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+
+	sess, err := session.Global.Get(id)
+	if err != nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": err.Error()})
+		return
+	}
+
+	out := make([][]string, len(req.Indices))
+	for k, idx := range req.Indices {
+		if idx >= 0 && idx < len(sess.Rows) {
+			out[k] = sess.Rows[idx]
+		} else {
+			out[k] = []string{}
+		}
+	}
+	c.JSON(http.StatusOK, gin.H{"rows": out})
+}
+
 // UpdateCells handles PUT /api/files/:id/cells
 func UpdateCells(c *gin.Context) {
 	id := c.Param("id")

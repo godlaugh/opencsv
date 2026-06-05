@@ -35,6 +35,13 @@ export const fileApi = {
     })
   },
 
+  // Fetch rows for an explicit list of full-dataset indices (windowed grid).
+  getRowsByIndices(id: string, indices: number[]) {
+    return client.post(`/files/${id}/rows/by-indices`, { indices }).then(r => r.data as {
+      rows: string[][]
+    })
+  },
+
   updateCells(id: string, cells: Cell[]) {
     return client.put(`/files/${id}/cells`, { cells }).then(r => r.data)
   },

@@ -46,6 +46,7 @@ func main() {
 			{
 				file.GET("", handlers.GetFileInfo)
 				file.GET("/rows", handlers.GetRows)
+				file.POST("/rows/by-indices", handlers.GetRowsByIndices)
 				file.GET("/content", handlers.GetContent)
 				file.PUT("/cells", handlers.UpdateCells)
 				file.PUT("/columns", handlers.UpdateColumns)

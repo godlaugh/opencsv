@@ -153,7 +153,7 @@
 </template>
 
 <script setup lang="ts">
-import { ref, computed, watch, onMounted, onUnmounted, nextTick, inject } from 'vue'
+import { ref, reactive, computed, watch, onMounted, onUnmounted, nextTick, inject } from 'vue'
 import type { Tab, Cell, Selection, FindMatch, AggregateResult, ColumnQuickFilter, SortKey, FilterGroup } from '@/types'
 import { fileApi } from '@/api/file'
 import { dataApi, exportApi } from '@/api/data'
@@ -201,17 +201,39 @@ const BUFFER = 5
 
 // Loading / data
 const loading = ref(false)
-const localRows = ref<string[][]>(props.tab.rows)
 
-// Derive effective rows (filter-aware)
-const effectiveRows = computed(() => {
-  if (props.tab.filterActive && props.tab.filteredIndices) {
-    return props.tab.filteredIndices.map(i => localRows.value[i] || [])
-  }
-  return localRows.value
+// --- Row storage: hybrid eager / windowed ---
+// Small files (<= ROW_THRESHOLD rows): eager mode — localRows holds the whole
+// dataset, everything is local and instant.
+// Large files (> ROW_THRESHOLD): windowed mode — only a sliding window of rows
+// lives in the browser (rowCache, keyed by full-dataset index), fetched on
+// demand and evicted, so tab memory stays bounded regardless of file size.
+const ROW_THRESHOLD = 200_000
+const windowed = computed(() => props.tab.session.totalRows > ROW_THRESHOLD)
+
+const localRows = ref<string[][]>(props.tab.rows)          // eager dense store
+const rowCache = reactive(new Map<number, string[]>())     // windowed sparse store: actualIndex -> row
+
+// Map a display-row (filter-aware) to its full-dataset index.
+function actualIndex(displayRow: number): number {
+  if (props.tab.filterActive && props.tab.filteredIndices) return props.tab.filteredIndices[displayRow]
+  return displayRow
+}
+
+// Read/write a row by its full-dataset index, in whichever mode is active.
+function rowByActual(actual: number): string[] | undefined {
+  return windowed.value ? rowCache.get(actual) : localRows.value[actual]
+}
+function setRowByActual(actual: number, row: string[]) {
+  if (windowed.value) rowCache.set(actual, row)
+  else localRows.value[actual] = row
+}
+
+// Number of display rows in the current view (filter-aware, mode-aware).
+const totalRows = computed(() => {
+  if (props.tab.filterActive && props.tab.filteredIndices) return props.tab.filteredIndices.length
+  return windowed.value ? props.tab.session.totalRows : localRows.value.length
 })
-
-const totalRows = computed(() => effectiveRows.value.length)
 const totalHeight = computed(() => totalRows.value * rowH)
 
 const columns = computed(() => props.tab.session.columns)
@@ -311,7 +333,7 @@ const editingCell = ref<{ row: number; col: number } | null>(null)
 const editValue = ref('')
 
 function getCellValue(row: number, col: number): string {
-  const r = effectiveRows.value[row]
+  const r = rowByActual(actualIndex(row))
   if (!r) return ''
   return r[col] ?? ''
 }
@@ -339,10 +361,10 @@ function commitEdit() {
       : row
 
     // Update local state
-    const rowData = [...(localRows.value[actualRow] || [])]
+    const rowData = [...(rowByActual(actualRow) || [])]
     while (rowData.length <= col) rowData.push('')
     rowData[col] = newVal
-    localRows.value[actualRow] = rowData
+    setRowByActual(actualRow, rowData)
 
     // Push to undo history
     historyStore.push(props.tab.id, {
@@ -531,10 +553,10 @@ async function pasteFromClipboard() {
         ? props.tab.filteredIndices[r] : r
       before.push({ row: actualRow, col: c, value: getCellValue(r, c) })
       cells.push({ row: actualRow, col: c, value: pastedRows[dr][dc] })
-      const rowData = [...(localRows.value[actualRow] || [])]
+      const rowData = [...(rowByActual(actualRow) || [])]
       while (rowData.length <= c) rowData.push('')
       rowData[c] = pastedRows[dr][dc]
-      localRows.value[actualRow] = rowData
+      setRowByActual(actualRow, rowData)
     }
   }
 
@@ -555,9 +577,9 @@ function clearSelection() {
         ? props.tab.filteredIndices[r] : r
       before.push({ row: actualRow, col: c, value: getCellValue(r, c) })
       cells.push({ row: actualRow, col: c, value: '' })
-      const rowData = [...(localRows.value[actualRow] || [])]
+      const rowData = [...(rowByActual(actualRow) || [])]
       rowData[c] = ''
-      localRows.value[actualRow] = rowData
+      setRowByActual(actualRow, rowData)
     }
   }
 
@@ -571,10 +593,10 @@ function undoAction() {
   const entry = historyStore.undo(props.tab.id)
   if (!entry) return
   for (const cell of entry.before.cells) {
-    const rowData = [...(localRows.value[cell.row] || [])]
+    const rowData = [...(rowByActual(cell.row) || [])]
     while (rowData.length <= cell.col) rowData.push('')
     rowData[cell.col] = cell.value
-    localRows.value[cell.row] = rowData
+    setRowByActual(cell.row, rowData)
   }
   debouncedSync(entry.before.cells)
 }
@@ -583,10 +605,10 @@ function redoAction() {
   const entry = historyStore.redo(props.tab.id)
   if (!entry) return
   for (const cell of entry.after.cells) {
-    const rowData = [...(localRows.value[cell.row] || [])]
+    const rowData = [...(rowByActual(cell.row) || [])]
     while (rowData.length <= cell.col) rowData.push('')
     rowData[cell.col] = cell.value
-    localRows.value[cell.row] = rowData
+    setRowByActual(cell.row, rowData)
   }
   debouncedSync(entry.after.cells)
 }
@@ -683,6 +705,13 @@ onMounted(() => {
   resizeObserver.observe(el)
   wrapRef.value?.focus()
 
+  // Windowed mode: seed the cache with the initial rows the tab opened with,
+  // then load whatever is actually visible.
+  if (windowed.value) {
+    props.tab.rows.forEach((r, i) => rowCache.set(i, r))
+    refetchVisible()
+  }
+
   // Grid action events from toolbar
   window.addEventListener('grid:undo', undoAction)
   window.addEventListener('grid:redo', redoAction)
@@ -725,13 +754,23 @@ async function runSort(keys: SortKey[]) {
     if (keys.length > 0) {
       await dataApi.sort(props.tab.session.id, keys)
     }
-    // Force a full reload in the new order so filter indices stay valid
-    localRows.value = []
-    await ensureAllRowsLoaded()
-    // Re-apply the active filter against the new order
-    if (props.tab.filterActive && props.tab.filterGroup && props.tab.filterGroup.conditions.length > 0) {
-      const result = await dataApi.filter(props.tab.session.id, props.tab.filterGroup)
-      props.tab.filteredIndices = result.matchIndices
+    if (windowed.value) {
+      // Windowed: cached rows are keyed by index whose data just changed → drop.
+      rowCache.clear()
+      // Re-run the filter against the new order so indices line up.
+      if (props.tab.filterActive && props.tab.filterGroup && props.tab.filterGroup.conditions.length > 0) {
+        const result = await dataApi.filter(props.tab.session.id, props.tab.filterGroup)
+        props.tab.filteredIndices = result.matchIndices
+      }
+      await refetchVisible()
+    } else {
+      // Eager: reload the whole dataset in the new order.
+      localRows.value = []
+      await ensureAllRowsLoaded()
+      if (props.tab.filterActive && props.tab.filterGroup && props.tab.filterGroup.conditions.length > 0) {
+        const result = await dataApi.filter(props.tab.session.id, props.tab.filterGroup)
+        props.tab.filteredIndices = result.matchIndices
+      }
     }
     notify?.('success', keys.length > 1 ? `Sorted by ${keys.length} columns` : 'Sorted')
   } catch (err: any) {
@@ -777,6 +816,66 @@ async function ensureAllRowsLoaded() {
   } finally {
     loading.value = false
   }
+}
+
+// ---- Windowed mode: fetch only the visible window of rows on demand ----
+const EVICT_KEEP = 3000 // display rows of slack to keep cached around the viewport
+let winSeq = 0
+
+// Ensure rows for display range [start, end] are present in rowCache.
+async function ensureWindow(start: number, end: number) {
+  if (!windowed.value) return
+  const need: number[] = []
+  for (let d = start; d <= end; d++) {
+    if (d < 0 || d >= totalRows.value) continue
+    const ai = actualIndex(d)
+    if (ai == null || ai < 0) continue
+    if (!rowCache.has(ai)) need.push(ai)
+  }
+  if (need.length === 0) return
+  const seq = ++winSeq
+  try {
+    if (props.tab.filterActive && props.tab.filteredIndices) {
+      // Scattered indices → fetch by explicit list
+      const { rows } = await fileApi.getRowsByIndices(props.tab.session.id, need)
+      if (seq !== winSeq) return
+      need.forEach((ai, k) => { if (rows[k]) rowCache.set(ai, rows[k]) })
+    } else {
+      // Contiguous range → cheaper offset/limit fetch
+      const offset = need[0]
+      const limit = need[need.length - 1] - need[0] + 1
+      const { rows } = await fileApi.getRows(props.tab.session.id, offset, limit)
+      if (seq !== winSeq) return
+      rows.forEach((r, k) => rowCache.set(offset + k, r))
+    }
+    evictFar(start, end)
+  } catch { /* leave gaps; they render blank and refetch on next scroll */ }
+}
+
+// Drop cached rows far from the current viewport to keep memory bounded.
+function evictFar(start: number, end: number) {
+  if (rowCache.size <= EVICT_KEEP * 3) return
+  const keep = new Set<number>()
+  const lo = Math.max(0, start - EVICT_KEEP)
+  const hi = Math.min(totalRows.value - 1, end + EVICT_KEEP)
+  for (let d = lo; d <= hi; d++) keep.add(actualIndex(d))
+  for (const k of rowCache.keys()) if (!keep.has(k)) rowCache.delete(k)
+}
+
+// Fetch the rows currently in view (used after filter/sort reset the view).
+async function refetchVisible() {
+  const start = Math.max(0, Math.floor(scrollTop.value / rowH) - BUFFER)
+  const end = Math.min(totalRows.value - 1, Math.ceil((scrollTop.value + viewportH.value) / rowH) + BUFFER)
+  await ensureWindow(start, end)
+}
+
+// After a structural change (insert/delete/transpose/dedup/transform) in
+// windowed mode the cache is stale (indices shifted / data changed) — drop it
+// and refetch the visible window.
+async function refreshAfterStructuralChange() {
+  if (!windowed.value) return
+  rowCache.clear()
+  await refetchVisible()
 }
 
 // ---- Per-column quick filter (Excel-style header dropdown) ----
@@ -847,6 +946,7 @@ function clearAllFilters() {
   props.tab.filterGroup = null
   props.tab.filterActive = false
   props.tab.filteredIndices = null
+  if (windowed.value) refetchVisible()
   notify?.('info', 'Filter cleared')
 }
 
@@ -872,16 +972,24 @@ async function applyFilterGroup() {
     props.tab.filterGroup = null
     props.tab.filterActive = false
     props.tab.filteredIndices = null
+    if (windowed.value) refetchVisible()
     notify?.('info', 'Filter cleared')
     return
   }
   try {
-    // filteredIndices reference the full dataset — make sure it's all loaded
-    await ensureAllRowsLoaded()
     loading.value = true
+    // Eager mode maps filteredIndices into a fully-loaded localRows, so it must
+    // load everything first. Windowed mode fetches matching rows on demand.
+    if (!windowed.value) await ensureAllRowsLoaded()
     const result = await dataApi.filter(props.tab.session.id, group)
     props.tab.filterActive = true
     props.tab.filteredIndices = result.matchIndices
+    if (windowed.value) {
+      rowCache.clear()
+      scrollTop.value = 0
+      if (bodyRef.value) bodyRef.value.scrollTop = 0
+      await refetchVisible()
+    }
     notify?.('info', `${result.matchCount} rows match`)
   } catch (err: any) {
     notify?.('error', err.message)
@@ -941,9 +1049,13 @@ async function onTransform(transformType: string) {
 
   try {
     await dataApi.transform(props.tab.session.id, cells, transformType)
-    // Refresh local rows
-    const { rows } = await fileApi.getRows(props.tab.session.id, 0, Math.max(localRows.value.length, 1000))
-    localRows.value = rows
+    if (windowed.value) {
+      await refreshAfterStructuralChange()
+    } else {
+      // Refresh local rows
+      const { rows } = await fileApi.getRows(props.tab.session.id, 0, Math.max(localRows.value.length, 1000))
+      localRows.value = rows
+    }
     notify?.('success', `Applied ${transformType} transform`)
   } catch (err: any) {
     notify?.('error', err.message)
@@ -1014,16 +1126,26 @@ async function onCtxSelect(id: string) {
     case 'clear': clearSelection(); break
     case 'insertRowBelow': {
       const r = ctxContext.row ?? selMaxRow.value
-      await dataApi.insertRows(id_, r, 1)
-      localRows.value.splice(r + 1, 0, Array(columns.value.length).fill(''))
-      tabsStore.updateTabRows(props.tab.id, localRows.value)
+      const res = await dataApi.insertRows(id_, r, 1)
+      if (windowed.value) {
+        props.tab.session.totalRows = res.totalRows
+        await refreshAfterStructuralChange()
+      } else {
+        localRows.value.splice(r + 1, 0, Array(columns.value.length).fill(''))
+        tabsStore.updateTabRows(props.tab.id, localRows.value)
+      }
       break
     }
     case 'insertRowAbove': {
       const r = (ctxContext.row ?? selMinRow.value) - 1
-      await dataApi.insertRows(id_, r, 1)
-      localRows.value.splice(r + 1, 0, Array(columns.value.length).fill(''))
-      tabsStore.updateTabRows(props.tab.id, localRows.value)
+      const res = await dataApi.insertRows(id_, r, 1)
+      if (windowed.value) {
+        props.tab.session.totalRows = res.totalRows
+        await refreshAfterStructuralChange()
+      } else {
+        localRows.value.splice(r + 1, 0, Array(columns.value.length).fill(''))
+        tabsStore.updateTabRows(props.tab.id, localRows.value)
+      }
       break
     }
     case 'deleteRows': {
@@ -1033,34 +1155,56 @@ async function onCtxSelect(id: string) {
           ? props.tab.filteredIndices[r] : r
         rows.push(actualRow)
       }
-      await dataApi.deleteRows(id_, rows)
-      localRows.value = localRows.value.filter((_, i) => !rows.includes(i))
-      tabsStore.updateTabRows(props.tab.id, localRows.value)
+      const res = await dataApi.deleteRows(id_, rows)
+      if (windowed.value) {
+        props.tab.session.totalRows = res.totalRows
+        // a filtered view's indices are now stale; re-run the filter
+        if (props.tab.filterActive && props.tab.filterGroup) {
+          const fr = await dataApi.filter(id_, props.tab.filterGroup)
+          props.tab.filteredIndices = fr.matchIndices
+        }
+        await refreshAfterStructuralChange()
+      } else {
+        localRows.value = localRows.value.filter((_, i) => !rows.includes(i))
+        tabsStore.updateTabRows(props.tab.id, localRows.value)
+      }
       break
     }
     case 'insertColLeft': {
       const c = (ctxContext.col ?? selMinCol.value) - 1
       const res = await dataApi.insertCols(id_, c, 1)
       props.tab.session.columns = res.columns
-      localRows.value = localRows.value.map(row => {
-        const newRow = [...row]; newRow.splice(c + 1, 0, ''); return newRow
-      })
+      if (windowed.value) {
+        await refreshAfterStructuralChange()
+      } else {
+        localRows.value = localRows.value.map(row => {
+          const newRow = [...row]; newRow.splice(c + 1, 0, ''); return newRow
+        })
+      }
       break
     }
     case 'insertColRight': {
       const c = ctxContext.col ?? selMaxCol.value
       const res = await dataApi.insertCols(id_, c, 1)
       props.tab.session.columns = res.columns
-      localRows.value = localRows.value.map(row => {
-        const newRow = [...row]; newRow.splice(c + 1, 0, ''); return newRow
-      })
+      if (windowed.value) {
+        await refreshAfterStructuralChange()
+      } else {
+        localRows.value = localRows.value.map(row => {
+          const newRow = [...row]; newRow.splice(c + 1, 0, ''); return newRow
+        })
+      }
       break
     }
     case 'deleteCol': {
       const c = ctxContext.col ?? selMinCol.value
       const res = await dataApi.deleteCols(id_, [c])
       props.tab.session.columns = res.columns
-      localRows.value = localRows.value.map(row => row.filter((_, i) => i !== c))
+      if (windowed.value) {
+        await refreshAfterStructuralChange()
+      } else {
+        localRows.value = localRows.value.map(row => row.filter((_, i) => i !== c))
+      }
       break
     }
     case 'sortAsc': {
@@ -1077,9 +1221,18 @@ async function onCtxSelect(id: string) {
       const c = ctxContext.col ?? 0
       const res = await dataApi.deduplicate(id_, [c])
       notify?.('success', `Removed ${res.removed} duplicate rows`)
-      const { rows } = await fileApi.getRows(id_, 0, 5000)
-      localRows.value = rows
-      tabsStore.updateTabRows(props.tab.id, rows)
+      props.tab.session.totalRows = res.totalRows
+      if (windowed.value) {
+        if (props.tab.filterActive && props.tab.filterGroup) {
+          const fr = await dataApi.filter(id_, props.tab.filterGroup)
+          props.tab.filteredIndices = fr.matchIndices
+        }
+        await refreshAfterStructuralChange()
+      } else {
+        const { rows } = await fileApi.getRows(id_, 0, 5000)
+        localRows.value = rows
+        tabsStore.updateTabRows(props.tab.id, rows)
+      }
       break
     }
     case 'transform': showTransform.value = true; break
@@ -1122,9 +1275,14 @@ function openSql() { showSql.value = true }
 async function insertRowAtActive() {
   const r = activeCell.value.row
   const id_ = props.tab.session.id
-  await dataApi.insertRows(id_, r, 1)
-  localRows.value.splice(r + 1, 0, Array(columns.value.length).fill(''))
-  tabsStore.updateTabRows(props.tab.id, localRows.value)
+  const res = await dataApi.insertRows(id_, r, 1)
+  if (windowed.value) {
+    props.tab.session.totalRows = res.totalRows
+    await refreshAfterStructuralChange()
+  } else {
+    localRows.value.splice(r + 1, 0, Array(columns.value.length).fill(''))
+    tabsStore.updateTabRows(props.tab.id, localRows.value)
+  }
   notify?.('success', 'Row inserted')
 }
 
@@ -1136,9 +1294,18 @@ async function deleteSelectedRows() {
     rows.push(actualRow)
   }
   const id_ = props.tab.session.id
-  await dataApi.deleteRows(id_, rows)
-  localRows.value = localRows.value.filter((_, i) => !rows.includes(i))
-  tabsStore.updateTabRows(props.tab.id, localRows.value)
+  const res = await dataApi.deleteRows(id_, rows)
+  if (windowed.value) {
+    props.tab.session.totalRows = res.totalRows
+    if (props.tab.filterActive && props.tab.filterGroup) {
+      const fr = await dataApi.filter(id_, props.tab.filterGroup)
+      props.tab.filteredIndices = fr.matchIndices
+    }
+    await refreshAfterStructuralChange()
+  } else {
+    localRows.value = localRows.value.filter((_, i) => !rows.includes(i))
+    tabsStore.updateTabRows(props.tab.id, localRows.value)
+  }
   sel.value = { startRow: 0, startCol: 0, endRow: 0, endCol: 0 }
   notify?.('success', `Deleted ${rows.length} row(s)`)
 }
@@ -1161,9 +1328,16 @@ async function handleTranspose() {
     const info = await fileApi.getInfo(props.tab.session.id)
     props.tab.session.columns = info.columns
     props.tab.session.totalRows = info.totalRows
-    const { rows } = await fileApi.getRows(props.tab.session.id, 0, Math.max(localRows.value.length, 1000))
-    localRows.value = rows
-    tabsStore.updateTabRows(props.tab.id, rows)
+    // transpose clears any filter/sort (shape changed)
+    props.tab.filterActive = false
+    props.tab.filteredIndices = null
+    if (windowed.value) {
+      await refreshAfterStructuralChange()
+    } else {
+      const { rows } = await fileApi.getRows(props.tab.session.id, 0, Math.max(localRows.value.length, 1000))
+      localRows.value = rows
+      tabsStore.updateTabRows(props.tab.id, rows)
+    }
     notify?.('success', 'Transposed')
   } catch (err: any) { notify?.('error', err.message) }
   finally { loading.value = false }
@@ -1245,11 +1419,23 @@ watch([selMinRow, selMaxRow, selMinCol, selMaxCol], () => {
 // Sync localRows when tab changes externally
 watch(() => props.tab.rows, (newRows) => {
   localRows.value = newRows
+  if (windowed.value) {
+    rowCache.clear()
+    newRows.forEach((r, i) => rowCache.set(i, r))
+    refetchVisible()
+  }
 }, { deep: false })
 
-// Lazy load more rows when scrolling (append-only, uses offset to avoid re-downloading)
+// Windowed mode: keep the visible window of rows loaded as the user scrolls.
+watch(visibleRowRange, (range) => {
+  if (!windowed.value || range.length === 0) return
+  ensureWindow(range[0], range[range.length - 1])
+})
+
+// Lazy load more rows when scrolling (eager mode only: append-only, offset-based)
 let lazyLoading = false
 watch(scrollTop, async (val) => {
+  if (windowed.value) return // windowed mode handled by visibleRowRange watcher
   // When a filter is active the full dataset is already loaded; the scroll
   // position is in filtered-display space, so the append heuristic below
   // would be meaningless. Skip it.
