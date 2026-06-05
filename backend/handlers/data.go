@@ -11,6 +11,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/gin-gonic/gin"
@@ -31,14 +32,85 @@ func SortData(c *gin.Context) {
 		return
 	}
 
-	sort.SliceStable(sess.Rows, func(i, j int) bool {
-		for _, key := range req.Keys {
-			a := getCellValue(sess.Rows[i], key.ColIndex)
-			b := getCellValue(sess.Rows[j], key.ColIndex)
+	n := len(sess.Rows)
 
-			cmp := compareValues(a, b, key.Type)
+	// Decorate-sort-undecorate: pre-parse each sort-key column ONCE into typed
+	// comparable arrays, then sort an index slice. This avoids re-parsing
+	// numbers/dates on every one of the O(n log n) comparisons (which made
+	// date sorts on 1M rows take ~10s).
+	type sortKeyData struct {
+		key     models.SortKey
+		numeric bool      // compare via nums[]
+		nums    []float64 // number/date/length keys (NaN = unparseable)
+	}
+	keysData := make([]sortKeyData, len(req.Keys))
+	for ki, key := range req.Keys {
+		kd := sortKeyData{key: key}
+		switch key.Type {
+		case "number":
+			kd.numeric = true
+			kd.nums = make([]float64, n)
+			for i := range sess.Rows {
+				f, err := strconv.ParseFloat(getCellValue(sess.Rows[i], key.ColIndex), 64)
+				if err != nil {
+					f = math.NaN()
+				}
+				kd.nums[i] = f
+			}
+		case "date":
+			kd.numeric = true
+			kd.nums = make([]float64, n)
+			for i := range sess.Rows {
+				if ts, ok := parseDate(getCellValue(sess.Rows[i], key.ColIndex)); ok {
+					kd.nums[i] = float64(ts)
+				} else {
+					kd.nums[i] = math.NaN()
+				}
+			}
+		case "length":
+			kd.numeric = true
+			kd.nums = make([]float64, n)
+			for i := range sess.Rows {
+				kd.nums[i] = float64(len([]rune(getCellValue(sess.Rows[i], key.ColIndex))))
+			}
+		}
+		keysData[ki] = kd
+	}
+
+	idx := make([]int, n)
+	for i := range idx {
+		idx[i] = i
+	}
+
+	sort.SliceStable(idx, func(a, b int) bool {
+		ia, ib := idx[a], idx[b]
+		for _, kd := range keysData {
+			var cmp int
+			if kd.numeric {
+				na, nb := kd.nums[ia], kd.nums[ib]
+				aNaN, bNaN := math.IsNaN(na), math.IsNaN(nb)
+				switch {
+				case aNaN && bNaN:
+					// both unparseable: fall back to string compare
+					cmp = strings.Compare(
+						getCellValue(sess.Rows[ia], kd.key.ColIndex),
+						getCellValue(sess.Rows[ib], kd.key.ColIndex))
+				case aNaN:
+					cmp = 1 // unparseable sorts last
+				case bNaN:
+					cmp = -1
+				case na < nb:
+					cmp = -1
+				case na > nb:
+					cmp = 1
+				}
+			} else {
+				cmp = strings.Compare(
+					getCellValue(sess.Rows[ia], kd.key.ColIndex),
+					getCellValue(sess.Rows[ib], kd.key.ColIndex))
+			}
 			if cmp != 0 {
-				if key.Order == "desc" {
+				if kd.key.Order == "desc" {
 					return cmp > 0
 				}
 				return cmp < 0
@@ -46,6 +118,13 @@ func SortData(c *gin.Context) {
 		}
 		return false
 	})
+
+	// Reorder rows according to the sorted index slice.
+	newRows := make([][]string, n)
+	for newPos, oldPos := range idx {
+		newRows[newPos] = sess.Rows[oldPos]
+	}
+	sess.Rows = newRows
 
 	sess.Modified = true
 	c.JSON(http.StatusOK, gin.H{"ok": true, "totalRows": sess.TotalRows})
@@ -548,46 +627,52 @@ func getCellValue(row []string, col int) string {
 	return ""
 }
 
-func compareValues(a, b, typ string) int {
-	switch typ {
-	case "number":
-		fa, errA := strconv.ParseFloat(a, 64)
-		fb, errB := strconv.ParseFloat(b, 64)
-		if errA == nil && errB == nil {
-			if fa < fb {
-				return -1
-			}
-			if fa > fb {
-				return 1
-			}
-			return 0
-		}
-	case "date":
-		formats := []string{"2006-01-02", "01/02/2006", "02/01/2006", "2006/01/02"}
-		for _, f := range formats {
-			ta, errA := time.Parse(f, a)
-			tb, errB := time.Parse(f, b)
-			if errA == nil && errB == nil {
-				if ta.Before(tb) {
-					return -1
-				}
-				if ta.After(tb) {
-					return 1
-				}
-				return 0
-			}
-		}
-	case "length":
-		la, lb := len([]rune(a)), len([]rune(b))
-		if la < lb {
-			return -1
-		}
-		if la > lb {
-			return 1
-		}
-		return 0
+// dateFormats covers common date and datetime layouts (date-only first so a
+// bare "2009-12-01" still parses).
+var dateFormats = []string{
+	"2006-01-02",
+	"2006-01-02 15:04:05",
+	"2006-01-02T15:04:05",
+	"2006-01-02 15:04",
+	time.RFC3339,
+	"01/02/2006",
+	"02/01/2006",
+	"2006/01/02",
+	"01/02/2006 15:04:05",
+	"02/01/2006 15:04:05",
+}
+
+// parseDate tries the known layouts and returns a Unix timestamp on success.
+func parseDate(s string) (int64, bool) {
+	s = strings.TrimSpace(s)
+	if s == "" {
+		return 0, false
 	}
-	return strings.Compare(a, b)
+	for _, f := range dateFormats {
+		if t, err := time.Parse(f, s); err == nil {
+			return t.Unix(), true
+		}
+	}
+	return 0, false
+}
+
+// reCache memoizes compiled regexes (including LIKE-derived patterns) so a
+// filter over 1M rows compiles each pattern once instead of per-row.
+var reCache sync.Map // pattern string -> reCacheEntry
+
+type reCacheEntry struct {
+	re  *regexp.Regexp
+	err error
+}
+
+func cachedRegex(pattern string) (*regexp.Regexp, error) {
+	if v, ok := reCache.Load(pattern); ok {
+		e := v.(reCacheEntry)
+		return e.re, e.err
+	}
+	re, err := regexp.Compile(pattern)
+	reCache.Store(pattern, reCacheEntry{re, err})
+	return re, err
 }
 
 func matchesGroup(row []string, group models.FilterGroup) bool {
@@ -633,6 +718,27 @@ func numOrStrCompare(a, b string) int {
 // likeMatch implements SQL LIKE semantics (case-insensitive): % matches any
 // sequence, _ matches any single character. Other characters are literal.
 func likeMatch(val, pattern string) bool {
+	// Fast paths for the common wildcard-only patterns (no '_' and '%' only at
+	// the ends): avoid regex entirely and use case-insensitive string ops.
+	if !strings.Contains(pattern, "_") {
+		inner := strings.Trim(pattern, "%")
+		if !strings.Contains(inner, "%") {
+			lead := strings.HasPrefix(pattern, "%")
+			trail := strings.HasSuffix(pattern, "%")
+			lv, li := strings.ToLower(val), strings.ToLower(inner)
+			switch {
+			case lead && trail:
+				return strings.Contains(lv, li) // %x%
+			case trail:
+				return strings.HasPrefix(lv, li) // x%
+			case lead:
+				return strings.HasSuffix(lv, li) // %x
+			default:
+				return lv == li // x (exact, case-insensitive)
+			}
+		}
+	}
+
 	var sb strings.Builder
 	sb.WriteString("(?is)^") // case-insensitive, dot-matches-newline, anchored
 	for _, r := range pattern {
@@ -646,7 +752,7 @@ func likeMatch(val, pattern string) bool {
 		}
 	}
 	sb.WriteString("$")
-	re, err := regexp.Compile(sb.String())
+	re, err := cachedRegex(sb.String()) // memoized: compiled once per pattern
 	if err != nil {
 		return false
 	}
@@ -708,7 +814,7 @@ func matchesCondition(row []string, cond models.FilterCondition) bool {
 	case "notBetween":
 		return !betweenMatch(val, cond.Values)
 	case "regex":
-		re, err := regexp.Compile(cond.Value)
+		re, err := cachedRegex(cond.Value)
 		if err != nil {
 			return false
 		}
