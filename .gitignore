@@ -17,3 +17,7 @@ frontend/dist/
 # Temp
 *.tmp
 *.log
+
+# Generated benchmark datasets (reproduce with scripts/gen_bench.py)
+/bench/
+opencsv-*.csv
