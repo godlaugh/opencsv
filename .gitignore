@@ -14,6 +14,9 @@ frontend/dist/
 .vscode/
 .idea/
 
+# Claude Code local config (machine-specific permissions)
+.claude/settings.local.json
+
 # Temp
 *.tmp
 *.log
