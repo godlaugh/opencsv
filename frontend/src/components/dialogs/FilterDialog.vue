@@ -29,6 +29,21 @@
               @input="cond.values = ($event.target as HTMLInputElement).value.split(',').map(s => s.trim()).filter(Boolean)"
               placeholder="value1, value2, ..."
             />
+            <template v-else-if="rangeOps.includes(cond.operator)">
+              <input
+                class="input flex-1"
+                :value="cond.values?.[0] ?? ''"
+                @input="setBound(cond, 0, ($event.target as HTMLInputElement).value)"
+                placeholder="Min"
+              />
+              <span class="range-and">and</span>
+              <input
+                class="input flex-1"
+                :value="cond.values?.[1] ?? ''"
+                @input="setBound(cond, 1, ($event.target as HTMLInputElement).value)"
+                placeholder="Max"
+              />
+            </template>
             <input
               v-else-if="!noValueOps.includes(cond.operator)"
               class="input flex-1"
@@ -54,29 +69,45 @@
 <script setup lang="ts">
 import { reactive } from 'vue'
 import { X, Trash2, Plus } from 'lucide-vue-next'
-import type { Column, FilterGroup } from '@/types'
+import type { Column, FilterGroup, FilterCondition } from '@/types'
 
 const props = defineProps<{ columns: Column[]; initial?: FilterGroup | null }>()
 const emit = defineEmits<{ close: []; filter: [group: FilterGroup] }>()
 
 const operators = [
+  { value: 'eq', label: 'equals' },
+  { value: 'ne', label: 'does not equal' },
+  { value: 'gt', label: 'is greater than' },
+  { value: 'gte', label: 'is greater than or equal to' },
+  { value: 'lt', label: 'is less than' },
+  { value: 'lte', label: 'is less than or equal to' },
   { value: 'contains', label: 'contains' },
   { value: 'notContains', label: 'does not contain' },
-  { value: 'eq', label: 'equals' },
-  { value: 'ne', label: 'not equals' },
   { value: 'startsWith', label: 'starts with' },
+  { value: 'notStartsWith', label: 'does not start with' },
   { value: 'endsWith', label: 'ends with' },
-  { value: 'gt', label: 'greater than' },
-  { value: 'lt', label: 'less than' },
-  { value: 'in', label: 'is one of' },
-  { value: 'notIn', label: 'is not one of' },
+  { value: 'notEndsWith', label: 'does not end with' },
+  { value: 'like', label: 'like' },
+  { value: 'notLike', label: 'not like' },
   { value: 'empty', label: 'is empty' },
   { value: 'notEmpty', label: 'is not empty' },
+  { value: 'in', label: 'is one of' },
+  { value: 'notIn', label: 'is not one of' },
+  { value: 'between', label: 'is between' },
+  { value: 'notBetween', label: 'is not between' },
   { value: 'regex', label: 'matches regex' },
 ]
 
 const noValueOps = ['empty', 'notEmpty']
 const listOps = ['in', 'notIn']
+const rangeOps = ['between', 'notBetween']
+
+function setBound(cond: FilterCondition, idx: 0 | 1, val: string) {
+  const vals = [...(cond.values ?? ['', ''])]
+  while (vals.length < 2) vals.push('')
+  vals[idx] = val
+  cond.values = vals
+}
 
 // Initialize from an existing filter group when present, so the global dialog
 // and the per-column header filters stay in sync.
@@ -107,4 +138,5 @@ function apply() { emit('filter', { ...group }) }
 <style scoped>
 .filter-logic { display: flex; align-items: center; gap: 8px; margin-bottom: 12px; font-size: 12px; }
 .filter-row { display: flex; align-items: center; gap: 6px; margin-bottom: 8px; }
+.range-and { font-size: 11px; color: var(--text-muted); flex-shrink: 0; }
 </style>

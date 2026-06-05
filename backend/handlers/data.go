@@ -613,6 +613,60 @@ func matchesGroup(row []string, group models.FilterGroup) bool {
 	return true
 }
 
+// numOrStrCompare compares a and b numerically when both parse as numbers,
+// otherwise lexicographically. Returns -1, 0, or 1.
+func numOrStrCompare(a, b string) int {
+	fa, errA := strconv.ParseFloat(a, 64)
+	fb, errB := strconv.ParseFloat(b, 64)
+	if errA == nil && errB == nil {
+		if fa < fb {
+			return -1
+		}
+		if fa > fb {
+			return 1
+		}
+		return 0
+	}
+	return strings.Compare(a, b)
+}
+
+// likeMatch implements SQL LIKE semantics (case-insensitive): % matches any
+// sequence, _ matches any single character. Other characters are literal.
+func likeMatch(val, pattern string) bool {
+	var sb strings.Builder
+	sb.WriteString("(?is)^") // case-insensitive, dot-matches-newline, anchored
+	for _, r := range pattern {
+		switch r {
+		case '%':
+			sb.WriteString(".*")
+		case '_':
+			sb.WriteString(".")
+		default:
+			sb.WriteString(regexp.QuoteMeta(string(r)))
+		}
+	}
+	sb.WriteString("$")
+	re, err := regexp.Compile(sb.String())
+	if err != nil {
+		return false
+	}
+	return re.MatchString(val)
+}
+
+// betweenMatch reports whether val is within [bounds[0], bounds[1]] inclusive.
+// Numeric comparison when all three parse as numbers, otherwise lexicographic.
+func betweenMatch(val string, bounds []string) bool {
+	if len(bounds) < 2 {
+		return false
+	}
+	lo, hi := bounds[0], bounds[1]
+	// Normalize so lo <= hi regardless of input order
+	if numOrStrCompare(lo, hi) > 0 {
+		lo, hi = hi, lo
+	}
+	return numOrStrCompare(val, lo) >= 0 && numOrStrCompare(val, hi) <= 0
+}
+
 func matchesCondition(row []string, cond models.FilterCondition) bool {
 	val := getCellValue(row, cond.ColIndex)
 
@@ -627,26 +681,32 @@ func matchesCondition(row []string, cond models.FilterCondition) bool {
 		return !strings.Contains(strings.ToLower(val), strings.ToLower(cond.Value))
 	case "startsWith":
 		return strings.HasPrefix(strings.ToLower(val), strings.ToLower(cond.Value))
+	case "notStartsWith":
+		return !strings.HasPrefix(strings.ToLower(val), strings.ToLower(cond.Value))
 	case "endsWith":
 		return strings.HasSuffix(strings.ToLower(val), strings.ToLower(cond.Value))
+	case "notEndsWith":
+		return !strings.HasSuffix(strings.ToLower(val), strings.ToLower(cond.Value))
 	case "empty":
 		return strings.TrimSpace(val) == ""
 	case "notEmpty":
 		return strings.TrimSpace(val) != ""
 	case "gt":
-		fa, errA := strconv.ParseFloat(val, 64)
-		fb, errB := strconv.ParseFloat(cond.Value, 64)
-		if errA == nil && errB == nil {
-			return fa > fb
-		}
-		return strings.Compare(val, cond.Value) > 0
+		return numOrStrCompare(val, cond.Value) > 0
+	case "gte":
+		return numOrStrCompare(val, cond.Value) >= 0
 	case "lt":
-		fa, errA := strconv.ParseFloat(val, 64)
-		fb, errB := strconv.ParseFloat(cond.Value, 64)
-		if errA == nil && errB == nil {
-			return fa < fb
-		}
-		return strings.Compare(val, cond.Value) < 0
+		return numOrStrCompare(val, cond.Value) < 0
+	case "lte":
+		return numOrStrCompare(val, cond.Value) <= 0
+	case "like":
+		return likeMatch(val, cond.Value)
+	case "notLike":
+		return !likeMatch(val, cond.Value)
+	case "between":
+		return betweenMatch(val, cond.Values)
+	case "notBetween":
+		return !betweenMatch(val, cond.Values)
 	case "regex":
 		re, err := regexp.Compile(cond.Value)
 		if err != nil {

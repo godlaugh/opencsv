@@ -823,9 +823,17 @@ const filterExpr = computed(() => {
       case 'contains': return `${name} contains ${quote(c.value)}`
       case 'notContains': return `${name} not contains ${quote(c.value)}`
       case 'startsWith': return `${name} starts with ${quote(c.value)}`
+      case 'notStartsWith': return `${name} not starts with ${quote(c.value)}`
       case 'endsWith': return `${name} ends with ${quote(c.value)}`
+      case 'notEndsWith': return `${name} not ends with ${quote(c.value)}`
+      case 'like': return `${name} LIKE ${quote(c.value)}`
+      case 'notLike': return `${name} NOT LIKE ${quote(c.value)}`
       case 'gt': return `${name} > ${c.value}`
+      case 'gte': return `${name} >= ${c.value}`
       case 'lt': return `${name} < ${c.value}`
+      case 'lte': return `${name} <= ${c.value}`
+      case 'between': return `${name} BETWEEN ${quote(c.values?.[0] ?? '')} AND ${quote(c.values?.[1] ?? '')}`
+      case 'notBetween': return `${name} NOT BETWEEN ${quote(c.values?.[0] ?? '')} AND ${quote(c.values?.[1] ?? '')}`
       case 'empty': return `${name} is empty`
       case 'notEmpty': return `${name} is not empty`
       case 'regex': return `${name} matches /${c.value}/`
@@ -850,6 +858,9 @@ function columnInitialFilter(colIndex: number): ColumnQuickFilter | undefined {
   if (!cond) return undefined
   if (cond.operator === 'in') {
     return { mode: 'values', selectedValues: cond.values ?? [] }
+  }
+  if (cond.operator === 'between' || cond.operator === 'notBetween') {
+    return { mode: 'condition', operator: cond.operator, value: cond.values?.[0] ?? '', value2: cond.values?.[1] ?? '' }
   }
   return { mode: 'condition', operator: cond.operator, value: cond.value }
 }
@@ -896,7 +907,11 @@ async function applyColFilter(filter: ColumnQuickFilter | null) {
     if (filter.mode === 'values' && filter.selectedValues && filter.selectedValues.length > 0) {
       group.conditions.push({ colIndex, operator: 'in', value: '', values: filter.selectedValues })
     } else if (filter.mode === 'condition' && filter.operator) {
-      group.conditions.push({ colIndex, operator: filter.operator, value: filter.value ?? '' })
+      if (filter.operator === 'between' || filter.operator === 'notBetween') {
+        group.conditions.push({ colIndex, operator: filter.operator, value: '', values: [filter.value ?? '', filter.value2 ?? ''] })
+      } else {
+        group.conditions.push({ colIndex, operator: filter.operator, value: filter.value ?? '' })
+      }
     }
   }
 

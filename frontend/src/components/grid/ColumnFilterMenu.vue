@@ -100,8 +100,15 @@
             <select v-model="condOp" class="cfm-select">
               <option v-for="op in operators" :key="op.value" :value="op.value">{{ op.label }}</option>
             </select>
+            <template v-if="rangeOps.includes(condOp)">
+              <div class="cfm-range">
+                <input v-model="condValue" class="cfm-input" placeholder="Min" @keydown.enter.prevent="apply" />
+                <span class="cfm-range-and">and</span>
+                <input v-model="condValue2" class="cfm-input" placeholder="Max" @keydown.enter.prevent="apply" />
+              </div>
+            </template>
             <input
-              v-if="!noValueOps.includes(condOp)"
+              v-else-if="!noValueOps.includes(condOp)"
               v-model="condValue"
               class="cfm-input"
               placeholder="Value…"
@@ -153,23 +160,33 @@ const initialHadNoSelection = !props.initial?.selectedValues
 
 const condOp = ref(props.initial?.operator ?? 'contains')
 const condValue = ref(props.initial?.value ?? '')
+const condValue2 = ref(props.initial?.value2 ?? '')
 
 const sortType = ref<'text' | 'number' | 'date' | 'length'>(props.activeSort?.type ?? 'text')
 
 const operators = [
+  { value: 'eq', label: 'equals' },
+  { value: 'ne', label: 'does not equal' },
+  { value: 'gt', label: 'is greater than' },
+  { value: 'gte', label: 'is greater than or equal to' },
+  { value: 'lt', label: 'is less than' },
+  { value: 'lte', label: 'is less than or equal to' },
   { value: 'contains', label: 'contains' },
   { value: 'notContains', label: 'does not contain' },
-  { value: 'eq', label: 'equals' },
-  { value: 'ne', label: 'not equals' },
   { value: 'startsWith', label: 'starts with' },
+  { value: 'notStartsWith', label: 'does not start with' },
   { value: 'endsWith', label: 'ends with' },
-  { value: 'gt', label: 'greater than' },
-  { value: 'lt', label: 'less than' },
+  { value: 'notEndsWith', label: 'does not end with' },
+  { value: 'like', label: 'like' },
+  { value: 'notLike', label: 'not like' },
   { value: 'empty', label: 'is empty' },
   { value: 'notEmpty', label: 'is not empty' },
+  { value: 'between', label: 'is between' },
+  { value: 'notBetween', label: 'is not between' },
   { value: 'regex', label: 'matches regex' },
 ]
 const noValueOps = ['empty', 'notEmpty']
+const rangeOps = ['between', 'notBetween']
 
 const checkedCount = computed(() => checked.value.size)
 
@@ -236,12 +253,18 @@ function apply() {
     } else {
       emit('apply', { mode: 'values', selectedValues: Array.from(checked.value) })
     }
-  } else {
-    if (!noValueOps.includes(condOp.value) && condValue.value === '') {
+  } else if (rangeOps.includes(condOp.value)) {
+    if (condValue.value === '' || condValue2.value === '') {
       emit('apply', null)
     } else {
-      emit('apply', { mode: 'condition', operator: condOp.value, value: condValue.value })
+      emit('apply', { mode: 'condition', operator: condOp.value, value: condValue.value, value2: condValue2.value })
     }
+  } else if (noValueOps.includes(condOp.value)) {
+    emit('apply', { mode: 'condition', operator: condOp.value, value: '' })
+  } else if (condValue.value === '') {
+    emit('apply', null)
+  } else {
+    emit('apply', { mode: 'condition', operator: condOp.value, value: condValue.value })
   }
   emit('close')
 }
@@ -249,6 +272,7 @@ function apply() {
 function clearFilter() {
   checked.value = new Set()
   condValue.value = ''
+  condValue2.value = ''
   emit('apply', null)
   emit('close')
 }
@@ -436,6 +460,9 @@ onUnmounted(() => window.removeEventListener('keydown', onKey))
 .cfm-more-hint { padding: 8px 10px; font-size: 11px; color: var(--text-muted); text-align: center; }
 
 .cfm-condition { display: flex; flex-direction: column; gap: 8px; }
+.cfm-range { display: flex; align-items: center; gap: 8px; }
+.cfm-range .cfm-input { flex: 1; min-width: 0; }
+.cfm-range-and { font-size: 11px; color: var(--text-muted); flex-shrink: 0; }
 .cfm-select, .cfm-input {
   padding: 6px 10px;
   font-size: 12px;

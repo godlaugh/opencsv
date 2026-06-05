@@ -71,6 +71,8 @@ export interface ColumnQuickFilter {
   // 'condition' mode
   operator?: string
   value?: string
+  // second bound for 'between' / 'is not between'
+  value2?: string
 }
 
 export interface FilterGroup {
