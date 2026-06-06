@@ -305,13 +305,42 @@ function getColLeft(colIdx: number) {
 }
 
 // Find matches
+// Find matches come back as full-dataset {row, col}. Map them to DISPLAY rows
+// so highlight + navigation are correct under filter/sort/windowing.
 const findMatches = ref<FindMatch[]>([])
+const findCurrent = ref(0)
+
+const findActualToDisplay = computed(() => {
+  if (props.tab.filterActive && props.tab.filteredIndices) {
+    const m = new Map<number, number>()
+    props.tab.filteredIndices.forEach((ai, d) => m.set(ai, d))
+    return m
+  }
+  return null // identity: display row == actual index
+})
+
+const findMatchKeys = computed(() => {
+  const set = new Set<string>()
+  const map = findActualToDisplay.value
+  for (const m of findMatches.value) {
+    const d = map ? map.get(m.row) : m.row
+    if (d !== undefined && d !== null) set.add(d + ':' + m.col)
+  }
+  return set
+})
+
 function isFindMatch(r: number, c: number) {
-  return findMatches.value.some(m => m.row === r && m.col === c)
+  return findMatchKeys.value.has(r + ':' + c)
 }
-function onFindMatches(matches: FindMatch[]) {
+
+function onFindMatches(matches: FindMatch[], current = 0) {
   findMatches.value = matches
-  if (matches.length > 0) scrollToCell(matches[0].row, matches[0].col)
+  findCurrent.value = current
+  const m = matches[current]
+  if (!m) return
+  const map = findActualToDisplay.value
+  const d = map ? map.get(m.row) : m.row
+  if (d !== undefined && d !== null) scrollToCell(d, m.col)
 }
 
 // Sort indicator — derived from the shared tab.sortKeys
@@ -526,6 +555,13 @@ onMounted(() => {
 
 // Clipboard
 async function copySelection() {
+  // In windowed mode the selection may span rows not currently cached; fetch
+  // them first so we don't copy blanks.
+  if (windowed.value) {
+    const idxs: number[] = []
+    for (let r = selMinRow.value; r <= selMaxRow.value; r++) idxs.push(actualIndex(r))
+    await ensureActualRowsLoaded(idxs)
+  }
   const rows = []
   for (let r = selMinRow.value; r <= selMaxRow.value; r++) {
     const row = []
@@ -860,6 +896,23 @@ function evictFar(start: number, end: number) {
   const hi = Math.min(totalRows.value - 1, end + EVICT_KEEP)
   for (let d = lo; d <= hi; d++) keep.add(actualIndex(d))
   for (const k of rowCache.keys()) if (!keep.has(k)) rowCache.delete(k)
+}
+
+// Ensure specific full-dataset rows are in the cache (windowed mode). Used by
+// operations that read row data outside the visible window, e.g. copying a
+// large selection. Fetches by explicit index in chunks.
+async function ensureActualRowsLoaded(indices: number[]) {
+  if (!windowed.value) return
+  const missing: number[] = []
+  for (const i of indices) {
+    if (i != null && i >= 0 && !rowCache.has(i)) missing.push(i)
+  }
+  const CHUNK = 5000
+  for (let s = 0; s < missing.length; s += CHUNK) {
+    const batch = missing.slice(s, s + CHUNK)
+    const { rows } = await fileApi.getRowsByIndices(props.tab.session.id, batch)
+    batch.forEach((ai, k) => { if (rows[k]) rowCache.set(ai, rows[k]) })
+  }
 }
 
 // Fetch the rows currently in view (used after filter/sort reset the view).
@@ -1240,7 +1293,7 @@ async function onCtxSelect(id: string) {
       const cells: Cell[] = []
       for (let r = selMinRow.value; r <= selMaxRow.value; r++)
         for (let c = selMinCol.value; c <= selMaxCol.value; c++)
-          cells.push({ row: r, col: c, value: '' })
+          cells.push({ row: actualIndex(r), col: c, value: '' })
       const res = await exportApi.toFormat(id_, 'markdown', cells)
       await navigator.clipboard.writeText(res.content)
       notify?.('success', 'Copied as Markdown')
@@ -1250,7 +1303,7 @@ async function onCtxSelect(id: string) {
       const cells: Cell[] = []
       for (let r = selMinRow.value; r <= selMaxRow.value; r++)
         for (let c = selMinCol.value; c <= selMaxCol.value; c++)
-          cells.push({ row: r, col: c, value: '' })
+          cells.push({ row: actualIndex(r), col: c, value: '' })
       const res = await exportApi.toFormat(id_, 'json', cells)
       await navigator.clipboard.writeText(res.content)
       notify?.('success', 'Copied as JSON')
@@ -1407,7 +1460,7 @@ watch([selMinRow, selMaxRow, selMinCol, selMaxCol], () => {
     const cells: Cell[] = []
     for (let r = selMinRow.value; r <= selMaxRow.value; r++)
       for (let c = selMinCol.value; c <= selMaxCol.value; c++)
-        cells.push({ row: r, col: c, value: '' })
+        cells.push({ row: actualIndex(r), col: c, value: '' })
     try {
       const res = await dataApi.aggregate(props.tab.session.id, cells)
       aggregateResult.value = res

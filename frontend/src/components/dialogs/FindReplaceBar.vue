@@ -49,7 +49,7 @@ import type { Tab, FindMatch } from '@/types'
 import { dataApi } from '@/api/data'
 
 const props = defineProps<{ tab: Tab }>()
-const emit = defineEmits<{ close: []; matches: [matches: FindMatch[]] }>()
+const emit = defineEmits<{ close: []; matches: [matches: FindMatch[], current: number] }>()
 
 const findInput = ref<HTMLInputElement | null>(null)
 const query = ref('')
@@ -65,7 +65,7 @@ onMounted(() => findInput.value?.focus())
 let searchTimer: ReturnType<typeof setTimeout> | null = null
 function onQueryChange() {
   if (searchTimer) clearTimeout(searchTimer)
-  if (!query.value) { matchCount.value = null; emit('matches', []); return }
+  if (!query.value) { matchCount.value = null; emit('matches', [], 0); return }
   searchTimer = setTimeout(doFind, 300)
 }
 
@@ -78,19 +78,20 @@ async function doFind() {
     matches.value = result.matches
     matchCount.value = result.count
     currentMatch.value = 0
-    emit('matches', result.matches)
+    emit('matches', result.matches, 0)
   } catch {}
 }
 
 function findNext() {
   if (matchCount.value === 0 || !matchCount.value) { doFind(); return }
   currentMatch.value = (currentMatch.value + 1) % matchCount.value
-  emit('matches', matches.value)
+  emit('matches', matches.value, currentMatch.value)
 }
 
 function findPrev() {
   if (!matchCount.value) return
   currentMatch.value = (currentMatch.value - 1 + matchCount.value) % matchCount.value
+  emit('matches', matches.value, currentMatch.value)
 }
 
 async function replaceNext() {
@@ -110,7 +111,7 @@ async function replaceAll() {
       regex: useRegex.value, caseSensitive: caseSensitive.value, all: true
     })
     matchCount.value = 0
-    emit('matches', [])
+    emit('matches', [], 0)
   } catch {}
 }
 
