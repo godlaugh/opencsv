@@ -110,6 +110,9 @@ export interface SqlResult {
 
 export interface HistoryEntry {
   type: string
-  before: { cells: Cell[] }
-  after: { cells: Cell[] }
+  before?: { cells: Cell[] }
+  after?: { cells: Cell[] }
+  /** Structural ops (insert/delete/sort/transform/dedup/transpose/rename) are
+   *  undone/redone on the backend; this entry is just a timeline marker. */
+  structural?: boolean
 }

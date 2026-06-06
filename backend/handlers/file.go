@@ -222,6 +222,7 @@ func UpdateColumns(c *gin.Context) {
 		return
 	}
 
+	session.Global.RecordColumns(id, sess.Columns) // inverse for undo
 	sess.Columns = req.Columns
 	sess.Modified = true
 	sess.DataVersion++

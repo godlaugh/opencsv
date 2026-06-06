@@ -67,6 +67,8 @@ func main() {
 				file.POST("/deduplicate", handlers.Deduplicate)
 				file.POST("/aggregate", handlers.Aggregate)
 				file.POST("/transpose", handlers.Transpose)
+				file.POST("/undo", handlers.UndoOp)
+				file.POST("/redo", handlers.RedoOp)
 
 				// SQL
 				file.POST("/sql", handlers.ExecuteSQL)

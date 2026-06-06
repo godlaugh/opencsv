@@ -14,12 +14,14 @@ import (
 
 // Store manages all open file sessions
 type Store struct {
-	mu       sync.RWMutex
-	sessions map[string]*models.FileSession
+	mu         sync.RWMutex
+	sessions   map[string]*models.FileSession
+	undoStates map[string]*undoState
 }
 
 var Global = &Store{
-	sessions: make(map[string]*models.FileSession),
+	sessions:   make(map[string]*models.FileSession),
+	undoStates: make(map[string]*undoState),
 }
 
 // Open loads a CSV file into memory and returns the session
@@ -95,6 +97,7 @@ func (s *Store) Get(id string) (*models.FileSession, error) {
 func (s *Store) Close(id string) {
 	s.mu.Lock()
 	delete(s.sessions, id)
+	delete(s.undoStates, id)
 	s.mu.Unlock()
 	sqlengine.Invalidate(id) // drop the cached SQLite table
 }

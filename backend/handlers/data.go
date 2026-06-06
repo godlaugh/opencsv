@@ -119,6 +119,9 @@ func SortData(c *gin.Context) {
 		return false
 	})
 
+	// Record the inverse (restore previous order) before reordering.
+	session.Global.RecordSortPerm(id, idx)
+
 	// Reorder rows according to the sorted index slice.
 	newRows := make([][]string, n)
 	for newPos, oldPos := range idx {
@@ -345,6 +348,7 @@ func InsertRows(c *gin.Context) {
 	sess.TotalRows = len(sess.Rows)
 	sess.Modified = true
 	sess.DataVersion++
+	session.Global.RecordInsertedRows(id, insertAt, req.Count)
 
 	c.JSON(http.StatusOK, gin.H{"ok": true, "totalRows": sess.TotalRows})
 }
@@ -364,12 +368,15 @@ func DeleteRows(c *gin.Context) {
 		return
 	}
 
+	// Record inverse (re-insert the deleted rows) before deleting.
+	session.Global.RecordPreDeleteRows(id, req.Rows)
+
 	toDelete := make(map[int]bool)
 	for _, r := range req.Rows {
 		toDelete[r] = true
 	}
 
-	newRows := sess.Rows[:0]
+	newRows := make([][]string, 0, len(sess.Rows))
 	for i, row := range sess.Rows {
 		if !toDelete[i] {
 			newRows = append(newRows, row)
@@ -428,6 +435,7 @@ func InsertCols(c *gin.Context) {
 
 	sess.Modified = true
 	sess.DataVersion++
+	session.Global.RecordInsertedCols(id, insertAt, req.Count)
 	c.JSON(http.StatusOK, gin.H{"ok": true, "columns": sess.Columns})
 }
 
@@ -446,12 +454,15 @@ func DeleteCols(c *gin.Context) {
 		return
 	}
 
+	// Record inverse (re-insert deleted columns with their data) before deleting.
+	session.Global.RecordPreDeleteCols(id, req.Cols)
+
 	toDelete := make(map[int]bool)
 	for _, col := range req.Cols {
 		toDelete[col] = true
 	}
 
-	newCols := sess.Columns[:0]
+	newCols := make([]models.Column, 0, len(sess.Columns))
 	for _, col := range sess.Columns {
 		if !toDelete[col.Index] {
 			newCols = append(newCols, col)
@@ -492,6 +503,9 @@ func TransformData(c *gin.Context) {
 		return
 	}
 
+	// Record inverse (old cell values) before transforming.
+	session.Global.RecordPreCells(id, req.Cells)
+
 	for _, cell := range req.Cells {
 		if cell.Row >= 0 && cell.Row < len(sess.Rows) {
 			row := sess.Rows[cell.Row]
@@ -522,17 +536,28 @@ func Deduplicate(c *gin.Context) {
 	}
 
 	seen := make(map[string]bool)
-	newRows := sess.Rows[:0]
-	removed := 0
-
-	for _, row := range sess.Rows {
+	var removedPositions []int
+	for i, row := range sess.Rows {
 		key := buildKey(row, req.ColIndexes)
 		if seen[key] {
-			removed++
+			removedPositions = append(removedPositions, i)
 			continue
 		}
 		seen[key] = true
-		newRows = append(newRows, row)
+	}
+
+	// Record inverse (re-insert removed rows) before deleting them.
+	session.Global.RecordPreDeleteRows(id, removedPositions)
+
+	toDel := make(map[int]bool, len(removedPositions))
+	for _, p := range removedPositions {
+		toDel[p] = true
+	}
+	newRows := make([][]string, 0, len(sess.Rows)-len(removedPositions))
+	for i, row := range sess.Rows {
+		if !toDel[i] {
+			newRows = append(newRows, row)
+		}
 	}
 
 	sess.Rows = newRows
@@ -540,7 +565,7 @@ func Deduplicate(c *gin.Context) {
 	sess.Modified = true
 	sess.DataVersion++
 
-	c.JSON(http.StatusOK, gin.H{"ok": true, "removed": removed, "totalRows": sess.TotalRows})
+	c.JSON(http.StatusOK, gin.H{"ok": true, "removed": len(removedPositions), "totalRows": sess.TotalRows})
 }
 
 // Aggregate handles POST /api/files/:id/aggregate
@@ -586,6 +611,9 @@ func Transpose(c *gin.Context) {
 		c.JSON(http.StatusOK, gin.H{"ok": true})
 		return
 	}
+
+	// Snapshot before reshaping so transpose is undoable.
+	session.Global.RecordPreTranspose(id)
 
 	// Find max cols
 	maxCols := len(sess.Columns)

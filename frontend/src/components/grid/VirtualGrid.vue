@@ -625,28 +625,70 @@ function clearSelection() {
 }
 
 // Undo / Redo
-function undoAction() {
-  const entry = historyStore.undo(props.tab.id)
-  if (!entry) return
-  for (const cell of entry.before.cells) {
-    const rowData = [...(rowByActual(cell.row) || [])]
-    while (rowData.length <= cell.col) rowData.push('')
-    rowData[cell.col] = cell.value
-    setRowByActual(cell.row, rowData)
-  }
-  debouncedSync(entry.before.cells)
+// Single coherent timeline: the frontend history stack orders all actions.
+// Cell edits are reverted locally; structural ops are reverted on the backend
+// (inverse stack) and the grid then refreshes.
+function pushStructural() {
+  historyStore.push(props.tab.id, { type: 'structural', structural: true })
 }
 
-function redoAction() {
-  const entry = historyStore.redo(props.tab.id)
+// Refresh the grid after the backend changed the data (undo/redo of a
+// structural op): pick up new columns/totalRows, re-run any active filter,
+// and reload the visible rows.
+async function applyServerEdit(res: { columns?: any[]; totalRows?: number }) {
+  if (res.columns) props.tab.session.columns = res.columns
+  if (typeof res.totalRows === 'number') props.tab.session.totalRows = res.totalRows
+  if (props.tab.filterActive && props.tab.filterGroup && props.tab.filterGroup.conditions.length > 0) {
+    const fr = await dataApi.filter(props.tab.session.id, props.tab.filterGroup)
+    props.tab.filteredIndices = fr.matchIndices
+  }
+  if (windowed.value) {
+    rowCache.clear()
+    await refetchVisible()
+  } else {
+    localRows.value = []
+    await ensureAllRowsLoaded()
+  }
+}
+
+async function undoAction() {
+  const entry = historyStore.undo(props.tab.id)
   if (!entry) return
-  for (const cell of entry.after.cells) {
+  if (entry.structural) {
+    try {
+      const res = await fileApi.undo(props.tab.session.id)
+      await applyServerEdit(res)
+      tabsStore.markModified(props.tab.id, true)
+    } catch (err: any) { notify?.('error', err.message) }
+    return
+  }
+  for (const cell of entry.before!.cells) {
     const rowData = [...(rowByActual(cell.row) || [])]
     while (rowData.length <= cell.col) rowData.push('')
     rowData[cell.col] = cell.value
     setRowByActual(cell.row, rowData)
   }
-  debouncedSync(entry.after.cells)
+  debouncedSync(entry.before!.cells)
+}
+
+async function redoAction() {
+  const entry = historyStore.redo(props.tab.id)
+  if (!entry) return
+  if (entry.structural) {
+    try {
+      const res = await fileApi.redo(props.tab.session.id)
+      await applyServerEdit(res)
+      tabsStore.markModified(props.tab.id, true)
+    } catch (err: any) { notify?.('error', err.message) }
+    return
+  }
+  for (const cell of entry.after!.cells) {
+    const rowData = [...(rowByActual(cell.row) || [])]
+    while (rowData.length <= cell.col) rowData.push('')
+    rowData[cell.col] = cell.value
+    setRowByActual(cell.row, rowData)
+  }
+  debouncedSync(entry.after!.cells)
 }
 
 // Scroll — sync header horizontal scroll with body
@@ -698,6 +740,7 @@ async function commitHeaderEdit(colIdx: number) {
   props.tab.session.columns = newCols
   try {
     await fileApi.updateColumns(props.tab.session.id, newCols)
+    pushStructural()
     tabsStore.markModified(props.tab.id, true)
   } catch {}
 }
@@ -789,6 +832,7 @@ async function runSort(keys: SortKey[]) {
     props.tab.sortKeys = keys
     if (keys.length > 0) {
       await dataApi.sort(props.tab.session.id, keys)
+      pushStructural()
     }
     if (windowed.value) {
       // Windowed: cached rows are keyed by index whose data just changed → drop.
@@ -1102,6 +1146,7 @@ async function onTransform(transformType: string) {
 
   try {
     await dataApi.transform(props.tab.session.id, cells, transformType)
+    pushStructural()
     if (windowed.value) {
       await refreshAfterStructuralChange()
     } else {
@@ -1179,7 +1224,7 @@ async function onCtxSelect(id: string) {
     case 'clear': clearSelection(); break
     case 'insertRowBelow': {
       const r = ctxContext.row ?? selMaxRow.value
-      const res = await dataApi.insertRows(id_, r, 1)
+      const res = await dataApi.insertRows(id_, r, 1); pushStructural(); pushStructural()
       if (windowed.value) {
         props.tab.session.totalRows = res.totalRows
         await refreshAfterStructuralChange()
@@ -1191,7 +1236,7 @@ async function onCtxSelect(id: string) {
     }
     case 'insertRowAbove': {
       const r = (ctxContext.row ?? selMinRow.value) - 1
-      const res = await dataApi.insertRows(id_, r, 1)
+      const res = await dataApi.insertRows(id_, r, 1); pushStructural(); pushStructural()
       if (windowed.value) {
         props.tab.session.totalRows = res.totalRows
         await refreshAfterStructuralChange()
@@ -1208,7 +1253,7 @@ async function onCtxSelect(id: string) {
           ? props.tab.filteredIndices[r] : r
         rows.push(actualRow)
       }
-      const res = await dataApi.deleteRows(id_, rows)
+      const res = await dataApi.deleteRows(id_, rows); pushStructural()
       if (windowed.value) {
         props.tab.session.totalRows = res.totalRows
         // a filtered view's indices are now stale; re-run the filter
@@ -1225,7 +1270,7 @@ async function onCtxSelect(id: string) {
     }
     case 'insertColLeft': {
       const c = (ctxContext.col ?? selMinCol.value) - 1
-      const res = await dataApi.insertCols(id_, c, 1)
+      const res = await dataApi.insertCols(id_, c, 1); pushStructural()
       props.tab.session.columns = res.columns
       if (windowed.value) {
         await refreshAfterStructuralChange()
@@ -1238,7 +1283,7 @@ async function onCtxSelect(id: string) {
     }
     case 'insertColRight': {
       const c = ctxContext.col ?? selMaxCol.value
-      const res = await dataApi.insertCols(id_, c, 1)
+      const res = await dataApi.insertCols(id_, c, 1); pushStructural()
       props.tab.session.columns = res.columns
       if (windowed.value) {
         await refreshAfterStructuralChange()
@@ -1251,7 +1296,7 @@ async function onCtxSelect(id: string) {
     }
     case 'deleteCol': {
       const c = ctxContext.col ?? selMinCol.value
-      const res = await dataApi.deleteCols(id_, [c])
+      const res = await dataApi.deleteCols(id_, [c]); pushStructural()
       props.tab.session.columns = res.columns
       if (windowed.value) {
         await refreshAfterStructuralChange()
@@ -1272,7 +1317,7 @@ async function onCtxSelect(id: string) {
     }
     case 'deduplicate': {
       const c = ctxContext.col ?? 0
-      const res = await dataApi.deduplicate(id_, [c])
+      const res = await dataApi.deduplicate(id_, [c]); pushStructural()
       notify?.('success', `Removed ${res.removed} duplicate rows`)
       props.tab.session.totalRows = res.totalRows
       if (windowed.value) {
@@ -1328,7 +1373,7 @@ function openSql() { showSql.value = true }
 async function insertRowAtActive() {
   const r = activeCell.value.row
   const id_ = props.tab.session.id
-  const res = await dataApi.insertRows(id_, r, 1)
+  const res = await dataApi.insertRows(id_, r, 1); pushStructural()
   if (windowed.value) {
     props.tab.session.totalRows = res.totalRows
     await refreshAfterStructuralChange()
@@ -1347,7 +1392,7 @@ async function deleteSelectedRows() {
     rows.push(actualRow)
   }
   const id_ = props.tab.session.id
-  const res = await dataApi.deleteRows(id_, rows)
+  const res = await dataApi.deleteRows(id_, rows); pushStructural()
   if (windowed.value) {
     props.tab.session.totalRows = res.totalRows
     if (props.tab.filterActive && props.tab.filterGroup) {
@@ -1378,6 +1423,7 @@ async function handleTranspose() {
   loading.value = true
   try {
     await dataApi.transpose(props.tab.session.id)
+    pushStructural()
     const info = await fileApi.getInfo(props.tab.session.id)
     props.tab.session.columns = info.columns
     props.tab.session.totalRows = info.totalRows

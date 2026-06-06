@@ -42,6 +42,14 @@ export const fileApi = {
     })
   },
 
+  // Undo/redo the most recent structural operation (backend inverse stack).
+  undo(id: string) {
+    return client.post(`/files/${id}/undo`).then(r => r.data as { ok: boolean; columns: Column[]; totalRows: number })
+  },
+  redo(id: string) {
+    return client.post(`/files/${id}/redo`).then(r => r.data as { ok: boolean; columns: Column[]; totalRows: number })
+  },
+
   updateCells(id: string, cells: Cell[]) {
     return client.put(`/files/${id}/cells`, { cells }).then(r => r.data)
   },
