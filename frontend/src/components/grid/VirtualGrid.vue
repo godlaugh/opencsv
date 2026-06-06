@@ -452,6 +452,31 @@ function onKeydown(e: KeyboardEvent) {
   if (meta && e.key === 'a') { e.preventDefault(); selectAll(); return }
   if (meta && e.key === 'f') { e.preventDefault(); showFindReplace.value = true; return }
 
+  // ⌘/Ctrl + Arrow → jump to the data edge; ⌘/Ctrl + Home/End → table corners.
+  if (meta && (e.key.startsWith('Arrow') || e.key === 'Home' || e.key === 'End')) {
+    e.preventDefault()
+    let r = activeCell.value.row, c = activeCell.value.col
+    switch (e.key) {
+      case 'ArrowUp': r = 0; break
+      case 'ArrowDown': r = totalRows.value - 1; break
+      case 'ArrowLeft': c = 0; break
+      case 'ArrowRight': c = columns.value.length - 1; break
+      case 'Home': r = 0; c = 0; break
+      case 'End': r = totalRows.value - 1; c = columns.value.length - 1; break
+    }
+    applyNav(r, c, e.shiftKey)
+    return
+  }
+
+  // PageUp / PageDown → move by a viewport page.
+  if (e.key === 'PageDown' || e.key === 'PageUp') {
+    e.preventDefault()
+    const page = Math.max(1, Math.floor(viewportH.value / rowH) - 1)
+    const dir = e.key === 'PageDown' ? 1 : -1
+    applyNav(activeCell.value.row + dir * page, activeCell.value.col, e.shiftKey)
+    return
+  }
+
   if (e.key === 'Delete' || e.key === 'Backspace') {
     e.preventDefault()
     clearSelection()
@@ -498,6 +523,19 @@ function moveActive(dr: number, dc: number) {
     col: Math.max(0, Math.min(columns.value.length - 1, activeCell.value.col + dc))
   }
   scrollToCell(activeCell.value.row, activeCell.value.col)
+}
+
+// Navigate to an absolute (row, col); extend the selection when `extend` is set.
+function applyNav(r: number, c: number, extend: boolean) {
+  r = Math.max(0, Math.min(totalRows.value - 1, r))
+  c = Math.max(0, Math.min(columns.value.length - 1, c))
+  if (extend) {
+    sel.value = { ...sel.value, endRow: r, endCol: c }
+  } else {
+    activeCell.value = { row: r, col: c }
+    sel.value = { startRow: r, startCol: c, endRow: r, endCol: c }
+  }
+  scrollToCell(r, c)
 }
 
 function extendSelection(dr: number, dc: number) {

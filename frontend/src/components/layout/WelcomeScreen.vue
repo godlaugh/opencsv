@@ -20,6 +20,25 @@
         <input ref="fileInput" type="file" accept=".csv,.tsv,.txt,.xlsx" style="display:none" @change="onFileInput" multiple />
       </div>
 
+      <div class="welcome-recent" v-if="recents.length">
+        <div class="recent-head">
+          <span>Recent</span>
+          <button class="recent-clear" @click="clearAll">Clear</button>
+        </div>
+        <button
+          v-for="r in recents"
+          :key="r.key"
+          class="recent-item"
+          :title="r.hasHandle ? r.name : r.name + ' (re-open from disk)'"
+          @click="reopen(r)"
+        >
+          <FileText :size="14" class="recent-icon" />
+          <span class="recent-name truncate">{{ r.name }}</span>
+          <span class="recent-meta">{{ fmtSize(r.size) }} · {{ fmtAgo(r.lastOpened) }}</span>
+          <span class="recent-remove" title="Remove" @click.stop="remove(r)"><X :size="12" /></span>
+        </button>
+      </div>
+
       <div class="welcome-features">
         <div class="feature-item">
           <Zap :size="14" />
@@ -50,10 +69,32 @@
 </template>
 
 <script setup lang="ts">
-import { FolderOpen, Zap, Database, ArrowUpDown, FileSpreadsheet } from 'lucide-vue-next'
+import { ref, onMounted } from 'vue'
+import { FolderOpen, Zap, Database, ArrowUpDown, FileSpreadsheet, FileText, X } from 'lucide-vue-next'
 import { useFileOpener } from '@/composables/useFileOpener'
+import { listRecent, removeRecent, clearRecent, type RecentFile } from '@/utils/recentFiles'
 
-const { fileInput, openFile, onFileInput } = useFileOpener()
+const { fileInput, openFile, onFileInput, openRecent } = useFileOpener()
+
+const recents = ref<RecentFile[]>([])
+onMounted(() => { recents.value = listRecent() })
+
+function reopen(r: RecentFile) { openRecent(r) }
+function remove(r: RecentFile) { removeRecent(r.key); recents.value = listRecent() }
+function clearAll() { clearRecent(); recents.value = [] }
+
+function fmtSize(b: number): string {
+  if (b < 1024) return b + ' B'
+  if (b < 1024 * 1024) return (b / 1024).toFixed(0) + ' KB'
+  return (b / 1024 / 1024).toFixed(1) + ' MB'
+}
+function fmtAgo(t: number): string {
+  const s = Math.floor((Date.now() - t) / 1000)
+  if (s < 60) return 'just now'
+  if (s < 3600) return Math.floor(s / 60) + 'm ago'
+  if (s < 86400) return Math.floor(s / 3600) + 'h ago'
+  return Math.floor(s / 86400) + 'd ago'
+}
 </script>
 
 <style scoped>
@@ -90,7 +131,64 @@ const { fileInput, openFile, onFileInput } = useFileOpener()
   margin-bottom: 32px;
   line-height: 1.6;
 }
-.welcome-actions { margin-bottom: 32px; }
+.welcome-actions { margin-bottom: 24px; }
+
+.welcome-recent {
+  text-align: left;
+  margin-bottom: 28px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--bg-surface);
+  overflow: hidden;
+}
+.recent-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 7px 12px;
+  font-size: 10px;
+  letter-spacing: 1px;
+  text-transform: uppercase;
+  color: var(--text-muted);
+  border-bottom: 1px solid var(--border);
+}
+.recent-clear {
+  background: none;
+  border: none;
+  color: var(--text-muted);
+  font-size: 10px;
+  letter-spacing: 0.5px;
+  cursor: pointer;
+  text-transform: uppercase;
+}
+.recent-clear:hover { color: var(--danger); }
+.recent-item {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  width: 100%;
+  padding: 8px 12px;
+  background: none;
+  border: none;
+  border-bottom: 1px solid var(--border);
+  cursor: pointer;
+  font-size: 12px;
+  color: var(--text-primary);
+  text-align: left;
+}
+.recent-item:last-child { border-bottom: none; }
+.recent-item:hover { background: var(--bg-hover); }
+.recent-icon { color: var(--accent); flex-shrink: 0; }
+.recent-name { flex: 1; min-width: 0; }
+.recent-meta { color: var(--text-muted); font-size: 11px; flex-shrink: 0; font-variant-numeric: tabular-nums; }
+.recent-remove {
+  display: flex;
+  color: var(--text-muted);
+  flex-shrink: 0;
+  border-radius: 3px;
+  padding: 2px;
+}
+.recent-remove:hover { background: var(--bg-hover); color: var(--danger); }
 .welcome-btn {
   font-size: 14px;
   padding: 10px 24px;

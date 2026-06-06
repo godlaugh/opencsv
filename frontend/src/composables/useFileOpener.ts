@@ -2,6 +2,7 @@ import { ref, inject } from 'vue'
 import { useTabsStore } from '@/stores/tabs'
 import { fileApi } from '@/api/file'
 import { supportsFileSystemAccess, pickFiles, registerHandle, type FsaFileHandle } from '@/utils/fileSystem'
+import { addRecent, getRecentHandle, removeRecent, type RecentFile } from '@/utils/recentFiles'
 
 // Shared open logic for the welcome screen and toolbar. When the File System
 // Access API is available, files are opened through the native picker so the
@@ -29,10 +30,36 @@ export function useFileOpener() {
 
       tabsStore.addTab(session, session.rows)
       if (handle) registerHandle(session.id, handle)
+      addRecent(file.name, file.size, handle).catch(() => {})
       notify?.('success', `Opened ${file.name}`)
     } catch (err: any) {
       notify?.('error', err.message)
     }
+  }
+
+  // Reopen a file from the Recent list. Uses the stored FSA handle when present
+  // (re-requesting read permission inside the click gesture); otherwise falls
+  // back to the open picker.
+  async function openRecent(rf: RecentFile) {
+    const handle = rf.hasHandle ? await getRecentHandle(rf.key) : undefined
+    if (handle && supportsFileSystemAccess()) {
+      try {
+        const q = await handle.queryPermission({ mode: 'read' })
+        if (q !== 'granted' && (await handle.requestPermission({ mode: 'read' })) !== 'granted') {
+          notify?.('error', 'Permission to read the file was denied')
+          return
+        }
+        const file = await handle.getFile()
+        await openFromFile(file, handle)
+        return
+      } catch {
+        // handle is stale (file moved/deleted) — drop it and fall through
+        removeRecent(rf.key)
+        notify?.('error', `Couldn't reopen ${rf.name} — open it from disk`)
+        return
+      }
+    }
+    openFile()
   }
 
   async function openFile() {
@@ -55,5 +82,5 @@ export function useFileOpener() {
     ;(e.target as HTMLInputElement).value = ''
   }
 
-  return { fileInput, openFile, onFileInput, openFromFile }
+  return { fileInput, openFile, onFileInput, openFromFile, openRecent }
 }
